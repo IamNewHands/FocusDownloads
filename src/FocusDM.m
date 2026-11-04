@@ -378,6 +378,12 @@ static id FDMValue(id task, NSString *key) {
                                                            action:@selector(toggleAll)];
     self.navigationItem.rightBarButtonItems = @[ add, all ];
 
+    UIBarButtonItem *close = [[UIBarButtonItem alloc] initWithTitle:@"关闭"
+                                                             style:UIBarButtonItemStylePlain
+                                                            target:self
+                                                            action:@selector(closePage)];
+    self.navigationItem.leftBarButtonItem = close;
+
     _seen = [NSMutableSet set];
     FDMLog(@"stage: before first refresh");
     [self refresh];
@@ -388,6 +394,12 @@ static id FDMValue(id task, NSString *key) {
                [e.callStackSymbols componentsJoinedByString:@"\n"]);
         self.title = @"下载管理（初始化异常）";
     }
+}
+
+- (void)closePage {
+    [_timer invalidate];
+    _timer = nil;
+    [self dismissViewControllerAnimated:YES completion:nil];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
@@ -1006,14 +1018,14 @@ static void FDMEnsureRow(UIViewController *vc) {
 static void FDMOpenDownloads(UIViewController *host) {
     FDMLog(@"stage: open downloads");
     @try {
+        // 注意：宿主的 BaseNavigationController 在 navigationController:willShowViewController:animated:
+        // 里断言 isKindOfClass:BaseViewController，push 非子类会抛 NSException 直接杀死进程。
+        // 因此这里一律模态呈现，自带导航控制器，绕开该断言。
         FDMViewController *vc = [[FDMViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
-        if (host.navigationController) {
-            [host.navigationController pushViewController:vc animated:YES];
-        } else {
-            UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-            [host presentViewController:nav animated:YES completion:nil];
-        }
-        FDMLog(@"stage: pushed");
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+        nav.modalPresentationStyle = UIModalPresentationFullScreen;
+        [host presentViewController:nav animated:YES completion:nil];
+        FDMLog(@"stage: presented modal");
     } @catch (NSException *e) {
         FDMLog(@"*** open downloads threw %@: %@\n%@", e.name, e.reason,
                [e.callStackSymbols componentsJoinedByString:@"\n"]);
