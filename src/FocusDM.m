@@ -722,11 +722,14 @@ totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite {
                                                            action:@selector(toggleAll)];
     self.navigationItem.rightBarButtonItems = @[ add, all ];
 
-    UIBarButtonItem *close = [[UIBarButtonItem alloc] initWithTitle:@"关闭"
-                                                             style:UIBarButtonItemStylePlain
-                                                            target:self
-                                                            action:@selector(closePage)];
-    self.navigationItem.leftBarButtonItem = close;
+    // push 进来时用系统自带的返回箭头（和其他菜单一致）；只有模态兜底才需要手动关闭
+    if (self.navigationController.presentingViewController) {
+        UIBarButtonItem *close = [[UIBarButtonItem alloc] initWithTitle:@"关闭"
+                                                                 style:UIBarButtonItemStylePlain
+                                                                target:self
+                                                                action:@selector(closePage)];
+        self.navigationItem.leftBarButtonItem = close;
+    }
 
     _seen = [NSMutableSet set];
     FDMLog(@"stage: before first refresh");
@@ -882,7 +885,10 @@ totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite {
         FDMRow *row = [self rowFromEngineItem:item];
         if (!row.key.length) continue;
         if (row.state == FDMStateCompleted) {
-            if (![[FDMStore shared] recordForKey:row.key]) [self recordForRow:row state:FDMStateCompleted];
+            NSMutableDictionary *old = [[FDMStore shared] recordForKey:row.key];
+            if (!old || [old[@"state"] integerValue] != FDMStateCompleted) {
+                [self recordForRow:row state:FDMStateCompleted];
+            }
             [[FDMEngine shared] forgetKey:row.key];
             continue;
         }
@@ -898,19 +904,28 @@ totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite {
         row.url = row.key;
         if ([nowKeys containsObject:row.key]) continue;
         [nowKeys addObject:row.key];
+        NSMutableDictionary *old = [[FDMStore shared] recordForKey:row.key];
         if (row.state == FDMStateCompleted) {
-            if (![[FDMStore shared] recordForKey:row.key]) [self recordForRow:row state:FDMStateCompleted];
+            // 关键：之前可能写过一条「已中断」快照，这里必须把它改写成已完成，
+            // 否则历史里会留着「已中断」而真正的完成记录被跳过
+            if (!old || [old[@"state"] integerValue] != FDMStateCompleted) {
+                [self recordForRow:row state:FDMStateCompleted];
+            }
         } else {
             [active addObject:row];
-            // 顺手把进度写进历史，App 被杀后至少能看到「已中断」
-            NSMutableDictionary *snapshot = [NSMutableDictionary dictionary];
-            snapshot[@"key"] = row.key;
-            snapshot[@"url"] = row.url ?: row.key;
-            snapshot[@"name"] = row.name ?: row.key;
-            snapshot[@"state"] = @(FDMStateInterrupted);
-            snapshot[@"progress"] = @(row.progress);
-            snapshot[@"time"] = @([[NSDate date] timeIntervalSince1970]);
-            [[FDMStore shared] upsertRecord:snapshot];
+            if (row.state == FDMStateDownloading || row.state == FDMStatePaused) {
+                if (!old || [old[@"state"] integerValue] != FDMStateCompleted) {
+                    // 顺手把进度写进历史，App 被杀后至少能看到「已中断」
+                    NSMutableDictionary *snapshot = [NSMutableDictionary dictionary];
+                    snapshot[@"key"] = row.key;
+                    snapshot[@"url"] = row.url ?: row.key;
+                    snapshot[@"name"] = row.name ?: row.key;
+                    snapshot[@"state"] = @(FDMStateInterrupted);
+                    snapshot[@"progress"] = @(row.progress);
+                    snapshot[@"time"] = @([[NSDate date] timeIntervalSince1970]);
+                    [[FDMStore shared] upsertRecord:snapshot];
+                }
+            }
         }
     }
     _loaded = YES;
@@ -1457,6 +1472,66 @@ static void FDMApplyNavState(id self, SEL _cmd, id vc, BOOL animated) {
     if (g_origApplyNavState) ((void (*)(id, SEL, id, BOOL))g_origApplyNavState)(self, _cmd, vc, animated);
 }
 
+static UIViewController *FDMTopViewController(void) {
+    UIWindow *key = nil;
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        if (w.isKeyWindow) { key = w; break; }
+    }
+    if (!key) key = [UIApplication sharedApplication].windows.firstObject;
+    UIViewController *vc = key.rootViewController;
+    while (vc.presentedViewController) vc = vc.presentedViewController;
+    if ([vc isKindOfClass:[UINavigationController class]]) vc = ((UINavigationController *)vc).topViewController;
+    if ([vc isKindOfClass:[UITabBarController class]]) vc = ((UITabBarController *)vc).selectedViewController;
+    return vc;
+}
+
+// 浏览器里点了「下载」之后，浮一个「查看下载」的小胶囊，点一下直接进下载管理
+static void FDMShowDownloadPill(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *key = nil;
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            if (w.isKeyWindow) { key = w; break; }
+        }
+        if (!key) return;
+        if ([key viewWithTag:0x46444D50]) return;
+
+        UIButton *pill = [UIButton buttonWithType:UIButtonTypeSystem];
+        pill.tag = 0x46444D50;
+        [pill setTitle:@"查看下载" forState:UIControlStateNormal];
+        pill.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+        [pill setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        pill.backgroundColor = [UIColor colorWithWhite:0.10 alpha:0.92];
+        pill.layer.cornerRadius = 18.0;
+        pill.layer.masksToBounds = YES;
+
+        CGFloat w = 104.0, h = 36.0;
+        CGFloat safeBottom = key.safeAreaInsets.bottom;
+        pill.frame = CGRectMake((key.bounds.size.width - w) / 2.0,
+                                key.bounds.size.height - safeBottom - h - 68.0, w, h);
+        pill.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
+
+        [pill addAction:[UIAction actionWithHandler:^(UIAction *action) {
+            UIViewController *top = FDMTopViewController();
+            [pill removeFromSuperview];
+            if (top) FDMOpenDownloads(top);
+        }] forControlEvents:UIControlEventTouchUpInside];
+
+        [key addSubview:pill];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(9.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [UIView animateWithDuration:0.25 animations:^{ pill.alpha = 0; } completion:^(BOOL done) {
+                [pill removeFromSuperview];
+            }];
+        });
+        FDMLog(@"pill: shown after host download");
+    });
+}
+
+static IMP g_origFileDownload = NULL;
+static void FDMFileDownloadWithUrl(id self, SEL _cmd, id url, id title) {
+    if (g_origFileDownload) ((void (*)(id, SEL, id, id))g_origFileDownload)(self, _cmd, url, title);
+    FDMShowDownloadPill();
+}
+
 static void FDMOpenDownloads(UIViewController *host) {
     FDMLog(@"stage: open downloads");
     @try {
@@ -1532,6 +1607,11 @@ static void FDMInitialize(void) {
         FDMInstallHook(cls, @selector(tableView:didSelectRowAtIndexPath:), (IMP)FDMSettingsDidSelect, &g_origSelect);
         Class cell = NSClassFromString(@"BookMarkCell");
         if (cell) FDMInstallHook(cell, @selector(setupLogoForModel:), (IMP)FDMSetupLogoForModel, &g_origSetupLogo);
+
+        Class fmCls = NSClassFromString(@"FileManager");
+        if (fmCls) {
+            FDMInstallHook(fmCls, @selector(downloadWithUrl:title:), (IMP)FDMFileDownloadWithUrl, &g_origFileDownload);
+        }
 
         Class navCls = NSClassFromString(@"BaseNavigationController");
         if (navCls) {
