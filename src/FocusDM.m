@@ -176,6 +176,31 @@ static double FDMNumber(id task, NSString *key) {
     return 0;
 }
 
+static double FDMDouble(id task, NSString *key) {
+    @try {
+        id v = [task valueForKey:key];
+        if ([v isKindOfClass:[NSNumber class]]) return [v doubleValue];
+        if ([v respondsToSelector:@selector(doubleValue)]) return [v doubleValue];   // NSString
+        if ([v isKindOfClass:NSClassFromString(@"NSProgress")] || [v respondsToSelector:@selector(fractionCompleted)]) {
+            return [v fractionCompleted];                                            // NSProgress
+        }
+    } @catch (NSException *e) { (void)e; }
+    return 0;
+}
+
+static double FDMProgressOfTask(id task) {
+    static NSArray *keys = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        keys = @[ @"progress", @"progressValue", @"fractionCompleted", @"percent", @"_progress" ];
+    });
+    for (NSString *k in keys) {
+        double v = FDMDouble(task, k);
+        if (v > 0.0) return (v > 1.0 && v <= 100.0) ? v / 100.0 : MIN(1.0, v);
+    }
+    return 0;
+}
+
 static id FDMValue(id task, NSString *key) {
     @try { return [task valueForKey:key]; } @catch (NSException *e) { return nil; }
 }
@@ -801,7 +826,7 @@ totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite {
     row.name = name;
     row.key = urlString.length ? urlString : (row.path.length ? row.path : name);
 
-    row.progress = FDMNumber(task, @"progress");
+    row.progress = FDMProgressOfTask(task);
     row.speed = FDMNumber(task, @"speed");
     row.eta = FDMNumber(task, @"timeRemaining");
     row.size = FDMFileSizeAtPath(row.path);
@@ -832,10 +857,12 @@ totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite {
             if (exp > 0) total = (double)exp;
         }
         if (total > 0) {
-            [bits addObject:[NSString stringWithFormat:@"已下 %@ / %@",
-                             FDMHumanSize(total * row.progress), FDMHumanSize(total)]];
+            double received2 = total * row.progress;
+            if (row.progress <= 0.0) received2 = (double)row.size;
+            [bits addObject:[NSString stringWithFormat:@"%@ / %@",
+                             FDMHumanSize(received2), FDMHumanSize(total)]];
         } else if (row.size) {
-            [bits addObject:[NSString stringWithFormat:@"已下 %@", FDMHumanSize((double)row.size)]];
+            [bits addObject:FDMHumanSize((double)row.size)];
         }
     } else if (row.state == FDMStateCompleted) {
         if (row.size) [bits addObject:FDMHumanSize((double)row.size)];
@@ -1153,6 +1180,47 @@ totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite {
 }
 
 - (void)deleteRow:(FDMRow *)row {
+    [self deleteRow:row deleteFile:YES];
+}
+
+- (NSArray *)candidatePathsForRow:(FDMRow *)row {
+    NSMutableArray *paths = [NSMutableArray array];
+    if (row.path.length) [paths addObject:row.path];
+
+    id fm = FDMSharedFileManager();
+    id sm = [fm respondsToSelector:@selector(sessionManager)] ? [fm sessionManager] : nil;
+    if (sm) {
+        NSString *dir = FDMString(FDMValue(sm, @"downloadPath"));
+        if (dir.length && row.name.length) {
+            [paths addObject:[dir stringByAppendingPathComponent:row.name]];
+        }
+    }
+    NSString *docs = FDMDocumentsPath();
+    if (docs.length && row.name.length) {
+        [paths addObject:[docs stringByAppendingPathComponent:row.name]];
+        [paths addObject:[[docs stringByAppendingPathComponent:@"Download"] stringByAppendingPathComponent:row.name]];
+        [paths addObject:[[docs stringByAppendingPathComponent:@"Downloads"] stringByAppendingPathComponent:row.name]];
+    }
+    return paths;
+}
+
+- (BOOL)removeFilesForRow:(FDMRow *)row {
+    BOOL removed = NO;
+    for (NSString *p in [self candidatePathsForRow:row]) {
+        if (!p.length) continue;
+        if ([[NSFileManager defaultManager] fileExistsAtPath:p]) {
+            if ([[NSFileManager defaultManager] removeItemAtPath:p error:NULL]) {
+                removed = YES;
+                FDMLog(@"delete: removed %@", p);
+            } else {
+                FDMLog(@"delete: failed %@", p);
+            }
+        }
+    }
+    return removed;
+}
+
+- (void)deleteRow:(FDMRow *)row deleteFile:(BOOL)deleteFile {
     id fm = FDMSharedFileManager();
     if (row.source == 0) {
         [[FDMEngine shared] cancelKey:row.key deleteFile:YES];
@@ -1164,8 +1232,8 @@ totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite {
                 [sm removeWithUrl:row.key completely:YES];
             }
         }
-        [[FDMEngine shared] cancelKey:row.key deleteFile:YES];
-        if (row.path.length) [[NSFileManager defaultManager] removeItemAtPath:row.path error:NULL];
+        [[FDMEngine shared] cancelKey:row.key deleteFile:deleteFile];
+        if (deleteFile) [self removeFilesForRow:row];
     }
     [[FDMStore shared] dropKey:row.key];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -1239,14 +1307,22 @@ totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite {
     UIContextualAction *del = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive
                                                                      title:@"删除"
                                                                    handler:^(UIContextualAction *a, UIView *v, void (^done)(BOOL)) {
-        UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"删除这条记录？"
-                                                                        message:@"同时删除已下载的文件"
-                                                                 preferredStyle:UIAlertControllerStyleAlert];
-        [confirm addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:^(UIAlertAction *x) { done(NO); }]];
-        [confirm addAction:[UIAlertAction actionWithTitle:@"删除" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) {
-            [self deleteRow:row];
+        UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"删除"
+                                                                        message:@"选择删除方式"
+                                                                 preferredStyle:UIAlertControllerStyleActionSheet];
+        [confirm addAction:[UIAlertAction actionWithTitle:@"仅删除记录（保留本地文件）"
+                                                    style:UIAlertActionStyleDefault
+                                                  handler:^(UIAlertAction *x) {
+            [self deleteRow:row deleteFile:NO];
             done(YES);
         }]];
+        [confirm addAction:[UIAlertAction actionWithTitle:@"删除记录和本地文件"
+                                                    style:UIAlertActionStyleDestructive
+                                                  handler:^(UIAlertAction *x) {
+            [self deleteRow:row deleteFile:YES];
+            done(YES);
+        }]];
+        [confirm addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:^(UIAlertAction *x) { done(NO); }]];
         [[self topPresenter] presentViewController:confirm animated:YES completion:nil];
     }];
     [actions addObject:del];
@@ -1437,6 +1513,15 @@ static UIImage *FDMCurrentLogoImage(id cell) {
 }
 
 static void FDMSetupLogoForModel(id self, SEL _cmd, id model) {
+    static NSInteger entry = 0;
+    if (entry < 6) {
+        entry++;
+        NSString *iu = nil, *pu = nil;
+        @try { iu = FDMString([model valueForKey:@"iconUrl"]); } @catch (NSException *e) { (void)e; }
+        @try { pu = FDMString([model valueForKey:@"url"]); } @catch (NSException *e) { (void)e; }
+        FDMLog(@"icon: setupLogoForModel #%ld cls=%@ iconUrl=%@ url=%@",
+               (long)entry, NSStringFromClass([self class]), iu, pu);
+    }
     NSString *iconURL = FDMIconURLForModel(model);
 
     // 命中磁盘缓存就直接铺图，并且**完全不跑原生实现**：
@@ -1473,6 +1558,61 @@ static void FDMSetupLogoForModel(id self, SEL _cmd, id model) {
             FDMLog(@"icon: stored %@", iconURL);
         });
     }
+}
+
+#pragma mark - 统一图标缓存钩子（SDWebImage）
+
+typedef void (*FDMSDSetImageIMP)(id, SEL, NSURL *, UIImage *, NSUInteger, id);
+static FDMSDSetImageIMP g_origSDSetImage = NULL;
+
+static void FDMSDSetImageCompleted(id self, SEL _cmd, NSURL *url, UIImage *placeholder,
+                                   NSUInteger options, id completedBlock) {
+    NSString *key = url.absoluteString;
+    if (key.length) {
+        UIImage *cached = [[FDMImageCache shared] cachedImageForURL:key];
+        if (cached) {
+            // 命中磁盘缓存：直接给图、完全不发请求，这正是「进主页图标不再重载」的关键
+            ((void (*)(id, SEL, UIImage *))objc_msgSend)(self, @selector(setImage:), cached);
+            if (completedBlock) {
+                void (^done)(UIImage *, NSData *, NSError *, NSInteger, BOOL, NSURL *) = completedBlock;
+                done(cached, nil, nil, 3, YES, url);
+            }
+            static NSInteger hits = 0;
+            if (hits < 5) { hits++; FDMLog(@"icon: sdhit %@", key); }
+            return;
+        }
+        static NSInteger miss = 0;
+        if (miss < 8) { miss++; FDMLog(@"icon: sdmiss %@", key); }
+    }
+
+    if (!g_origSDSetImage) return;
+    if (!key.length || !completedBlock) {
+        g_origSDSetImage(self, _cmd, url, placeholder, options, completedBlock);
+        return;
+    }
+
+    // 没命中：转发给原生，完成后把图落盘，下次启动就能直接命中
+    void (^done)(UIImage *, NSData *, NSError *, NSInteger, BOOL, NSURL *) = completedBlock;
+    void (^wrap)(UIImage *, NSData *, NSError *, NSInteger, BOOL, NSURL *) =
+    ^(UIImage *image, NSData *data, NSError *error, NSInteger cacheType, BOOL finished, NSURL *imageURL) {
+        if (image && finished) {
+            [[FDMImageCache shared] storeImage:image forURL:key];
+            FDMLog(@"icon: sdstored %@", key);
+        }
+        done(image, data, error, cacheType, finished, imageURL);
+    };
+    g_origSDSetImage(self, _cmd, url, placeholder, options, (id)wrap);
+}
+
+static void FDMInstallImageHook(void) {
+    Class cls = NSClassFromString(@"UIImageView");
+    SEL sel = NSSelectorFromString(@"sd_setImageWithURL:placeholderImage:options:completed:");
+    if (!cls || !sel) return;
+    Method m = class_getInstanceMethod(cls, sel);
+    if (!m) { FDMLog(@"hook: sd_setImage not found"); return; }
+    g_origSDSetImage = (FDMSDSetImageIMP)method_getImplementation(m);
+    method_setImplementation(m, (IMP)FDMSDSetImageCompleted);
+    FDMLog(@"hook: sd_setImageWithURL installed");
 }
 
 #pragma mark - 设置页插入「下载管理」行（直接改数据源，复用原生 cell）
@@ -1728,6 +1868,7 @@ static void FDMInitialize(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         Class cls = NSClassFromString(@"SettingViewController");
         if (!cls) { FDMLog(@"init: SettingViewController missing"); return; }
+        FDMInstallImageHook();
         FDMInstallHook(cls, @selector(viewWillAppear:), (IMP)FDMSettingsWillAppear, &g_origWillAppear);
         FDMInstallHook(cls, @selector(tableView:didSelectRowAtIndexPath:), (IMP)FDMSettingsDidSelect, &g_origSelect);
         Class cell = NSClassFromString(@"BookMarkCell");
