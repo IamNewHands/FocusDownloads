@@ -15,6 +15,7 @@
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 
 #pragma mark - 宿主接口（仅编译期声明）
 
