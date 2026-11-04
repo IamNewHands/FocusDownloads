@@ -1472,6 +1472,8 @@ static void FDMApplyNavState(id self, SEL _cmd, id vc, BOOL animated) {
     if (g_origApplyNavState) ((void (*)(id, SEL, id, BOOL))g_origApplyNavState)(self, _cmd, vc, animated);
 }
 
+static void FDMOpenDownloads(UIViewController *host);
+
 static UIViewController *FDMTopViewController(void) {
     UIWindow *key = nil;
     for (UIWindow *w in [UIApplication sharedApplication].windows) {
