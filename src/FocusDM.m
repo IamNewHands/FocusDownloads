@@ -18,6 +18,7 @@
 #import <objc/message.h>
 #import <QuartzCore/QuartzCore.h>
 #import <unistd.h>
+#import <math.h>
 #import <fcntl.h>
 #import <signal.h>
 #import <string.h>
@@ -1652,6 +1653,16 @@ static UIImage *FDMCurrentLogoImage(id cell) {
     return img;
 }
 
+static NSMutableSet *g_snapUpgraded = nil;
+
+static BOOL FDMUpgradeOnce(NSString *key) {
+    if (!key.length) return NO;
+    if (!g_snapUpgraded) g_snapUpgraded = [NSMutableSet set];
+    if ([g_snapUpgraded containsObject:key]) return NO;
+    [g_snapUpgraded addObject:key];
+    return YES;
+}
+
 static void FDMSetupLogoForModel(id self, SEL _cmd, id model) {
     static NSInteger entry = 0;
     if (entry < 6) {
@@ -1665,9 +1676,9 @@ static void FDMSetupLogoForModel(id self, SEL _cmd, id model) {
     NSString *page = nil;
     @try { page = FDMString([model valueForKey:@"url"]); } @catch (NSException *e) { (void)e; }
     if (!page.length) page = FDMIconURLForModel(model);
-    NSString *snapKey = FDMSnapKey(page, FDMIsDarkCell(self));
+    // 快照与深色模式无关：同一个页面永远命中同一张图
+    NSString *snapKey = FDMSnapKey(page, NO);
 
-    // 命中快照就直接铺图、完全不跑原生实现（原生会先清空再起请求，那就是"每次重载"的来源）
     if (snapKey.length) {
         UIImage *snap = [[FDMSnapCache shared] imageForKey:snapKey];
         if (snap) {
@@ -1685,17 +1696,37 @@ static void FDMSetupLogoForModel(id self, SEL _cmd, id model) {
     if (!snapKey.length) return;
 
     __weak id weakCell = self;
-    static const double kDelays[] = {0.30, 0.90, 2.20};
-    for (int i = 0; i < 3; i++) {
-        double d = kDelays[i];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(d * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+
+    // 第一步：尽快把「第一眼看到的样子」固定下来。连不上的站抓到的是文字占位块，
+    // 之后就一直用这块图，永远不会再出现"重新加载"。
+    static const double kFix[] = {0.10, 0.40};
+    for (int i = 0; i < 2; i++) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kFix[i] * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             id cell = weakCell;
             if (!cell) return;
             if ([[FDMSnapCache shared] imageForKey:snapKey]) return;
             UIImage *shot = FDMCaptureLogo(cell);
             if (!shot) return;
             [[FDMSnapCache shared] storeImage:shot forKey:snapKey];
-            FDMLog(@"icon: snap-stored %@ (%.0fx%.0f)", page, shot.size.width, shot.size.height);
+            FDMLog(@"icon: snap-fixed %@ (%.0fx%.0f)", page, shot.size.width, shot.size.height);
+        });
+    }
+
+    // 第二步：若之后真的拿到图标，只升级一次（只升不降）
+    static const double kUp[] = {1.00, 2.00, 3.50};
+    for (int i = 0; i < 3; i++) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kUp[i] * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            id cell = weakCell;
+            if (!cell) return;
+            UIImage *real = FDMCurrentLogoImage(cell);
+            if (!real || real.size.width < 4.0) return;
+            UIImage *existing = [[FDMSnapCache shared] imageForKey:snapKey];
+            if (existing && existing.size.width >= 4.0 &&
+                fabs(existing.size.width - real.size.width) < 0.5 &&
+                fabs(existing.size.height - real.size.height) < 0.5) return;
+            if (!FDMUpgradeOnce(snapKey)) return;
+            [[FDMSnapCache shared] storeImage:real forKey:snapKey];
+            FDMLog(@"icon: snap-upgrade %@ (%.0fx%.0f)", page, real.size.width, real.size.height);
         });
     }
 }
@@ -2017,6 +2048,14 @@ static NSInteger FDMItemTypeOf(id item) {
 static void FDMPrefSelect(id self, SEL _cmd, id item) {
     if (FDMItemTypeOf(item) == 17) {
         FDMLog(@"pref: feedback item -> downloads");
+        // 原分发器第一句会收起偏好面板，我们绕过了它，必须自己收
+        SEL hideSel = NSSelectorFromString(@"hideUserPreferenceView");
+        if ([self respondsToSelector:hideSel]) {
+            @try { ((void (*)(id, SEL))objc_msgSend)(self, hideSel); FDMLog(@"pref: hid preference view"); }
+            @catch (NSException *e) { FDMLog(@"pref: hide failed %@", e.reason); }
+        } else {
+            FDMLog(@"pref: hideUserPreferenceView missing");
+        }
         FDMOpenDownloads((UIViewController *)self);
         return;
     }
