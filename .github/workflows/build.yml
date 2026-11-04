@@ -1,0 +1,36 @@
+name: build-dylib
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  dylib:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build arm64 dylib
+        run: |
+          set -euo pipefail
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "SDK=$SDK"
+          xcrun --sdk iphoneos clang -arch arm64 \
+            -miphoneos-version-min=14.0 \
+            -isysroot "$SDK" \
+            -fobjc-arc -O2 -Wall \
+            -dynamiclib \
+            -install_name @executable_path/Frameworks/FocusDM.dylib \
+            -framework UIKit -framework Foundation \
+            -o FocusDM.dylib src/FocusDM.m
+          echo "--- result ---"
+          lipo -info FocusDM.dylib
+          ls -l FocusDM.dylib
+          shasum -a 256 FocusDM.dylib
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FocusDM-dylib
+          path: FocusDM.dylib
+          if-no-files-found: error
