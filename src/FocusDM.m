@@ -1283,6 +1283,30 @@ static NSString *FDMIconURLForModel(id model) {
 
 static IMP g_origSetupLogo = NULL;
 
+static NSMutableSet *g_iconTouched = nil;
+
+static void FDMApplyCachedIcon(id cell, UIImage *image) {
+    @try {
+        UIImageView *iv = [cell valueForKey:@"logoImage"];
+        if ([iv isKindOfClass:[UIImageView class]]) {
+            iv.image = image;
+            iv.hidden = NO;
+            iv.contentMode = UIViewContentModeScaleAspectFit;
+        }
+        UIView *text = [cell valueForKey:@"logoText"];
+        if ([text isKindOfClass:[UIView class]]) text.hidden = YES;
+    } @catch (NSException *e) { (void)e; }
+}
+
+static UIImage *FDMCurrentLogoImage(id cell) {
+    UIImage *img = nil;
+    @try {
+        UIImageView *iv = [cell valueForKey:@"logoImage"];
+        if ([iv isKindOfClass:[UIImageView class]]) img = iv.image;
+    } @catch (NSException *e) { (void)e; }
+    return img;
+}
+
 static void FDMSetupLogoForModel(id self, SEL _cmd, id model) {
     NSString *iconURL = FDMIconURLForModel(model);
 
