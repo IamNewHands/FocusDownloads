@@ -1,15 +1,15 @@
 {
   "schemaVersion": "aegis.schema.v0",
   "taskId": "2026-11-08-focus-v19-repairs",
-  "currentTodo": "实现已冻结并暂存；缓存stage1无阻断，stage2最终质量复核待返回；macOS原生CI待执行",
+  "currentTodo": "本轮代码、回归、CI与新IPA交付完成；等待用户LCSign重签真机验收",
   "completedTodos": [
-    "包装39/39 PASS；全部静态规格复核问题已修；Engine/Store/UI/Host/打包stage2确认无剩余已证实阻断；旧IPA和库SHA不变"
+    "全部报告编号实现/独立复核；本机39回归，CI Foundation26+edge与UIKit夹具、arm64来源均通过；新v19IPA独立读回通过；旧产物未覆盖"
   ],
-  "activeSlice": "ci-candidate",
+  "activeSlice": "delivered",
   "evidenceRefs": [
-    "39项Python包装回归PASS，实际v18完整前像重建432diff，源语法与gitdiffcheckPASS"
+    "CI42475892882源afb5b4d；IPA SHA a39aee1077c9f52cbbe18a2bd393abc0978501e970c27373354d60e558f6a6b6"
   ],
   "blockedOn": null,
-  "nextStep": "最后缓存质量回读后本地提交与授权main推送，执行同源SHA CI",
+  "nextStep": "用户重签新IPA后准备一次图标，冷启动验证首帧并复制缓存诊断",
   "updatedAt": "2026-11-08"
 }

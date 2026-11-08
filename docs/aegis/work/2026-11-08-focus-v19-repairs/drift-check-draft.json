@@ -3,13 +3,13 @@
   "taskId": "2026-11-08-focus-v19-repairs",
   "taskIntentRef": "docs/aegis/work/2026-11-08-focus-v19-repairs/task-intent-draft.json",
   "baselineRefs": [
-    "D:\\GitHub_Clone\\_artifacts\\focusdm\\Focus-v18-review-20261108.md"
+    "docs/aegis/baseline/2026-11-08-focus-v19-current.md"
   ],
-  "scopeStatus": "not-yet-verified",
-  "compatStatus": "not-yet-verified",
-  "retirementStatus": "not-yet-verified",
+  "scopeStatus": "已列代码修复和CI新包交付完成，真机验收未覆盖",
+  "compatStatus": "旧数组/resume/完成历史与旧产物保留；iOS14最低版本一致；原补丁范围不扩大",
+  "retirementStatus": "旧重复owner、短钩子、定时快照、UI猜完成、猜路径删除和dylib旧默认入口责任已退役；旧用户文件保留",
   "newRiskSignals": [
-    "文件归属、持久化兼容、异步回调和私有宿主接口"
+    "无CGImage原生向量不持久化；真实Focus首帧/重签后台/主题手势尚需设备验收"
   ],
-  "decision": "needs-baseline-readback"
+  "decision": "continue"
 }

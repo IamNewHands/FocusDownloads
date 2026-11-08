@@ -2,9 +2,9 @@
   "schemaVersion": "aegis.schema.v0",
   "taskId": "2026-11-08-focus-v19-repairs",
   "lastCheckpointRef": "docs/aegis/work/2026-11-08-focus-v19-repairs/todo-checkpoint-draft.json",
-  "resumeInstruction": "先读当前plan/checkpoint和git status；所有任务文件已暂存，尚无新commit；不要重复模型发现/旧历史检索或把未运行原生回归当PASS",
+  "resumeInstruction": "本轮已交付；后续若用户反馈真机问题，读取本计划/逐项结果和用户新日志，不重用旧静态结论宣称修好",
   "knownPartialWork": [
-    "包装39/39 PASS；全部静态规格复核问题已修；Engine/Store/UI/Host/打包stage2确认无剩余已证实阻断；旧IPA和库SHA不变"
+    "全部报告编号实现/独立复核；本机39回归，CI Foundation26+edge与UIKit夹具、arm64来源均通过；新v19IPA独立读回通过；旧产物未覆盖"
   ],
   "mustReadBeforeContinuing": [
     "docs/aegis/work/2026-11-08-focus-v19-repairs/10-intent.md",
@@ -12,6 +12,6 @@
     "docs/aegis/work/2026-11-08-focus-v19-repairs/todo-checkpoint-draft.json"
   ],
   "unsafeToAssume": [
-    "Foundation26+edge和UIKit缓存/表单测试尚未编译运行；向量无CGImage仍条件限制，真机首帧未验"
+    "模拟器fixture不是真实Focus设备；无CGImage向量仍不持久化；编译源afb5b4d，后续仅文档提交不改变库来源"
   ]
 }

@@ -5,8 +5,8 @@
 - Requested outcome: 按 v18 审查逐项本地修复并验证，保留既有补丁和用户数据
 - Goal: 按 v18 审查逐项本地修复并验证，保留既有补丁和用户数据
 - Success evidence:
-- none
-- Stop condition: Stop when success evidence is satisfied or a blocker/risk requires pause.
+- 审查所有编号实现映射、独立规格/质量回读；本机39包装回归PASS；同源CI原生Foundation/UIKit/arm64/provenance全部PASS；新IPA独立读回且旧产物SHA不变。
+- Stop condition: 本轮代码/回归/CI/新未重签IPA交付完成；真实Focus设备验收明确未覆盖，不代签安装。
 - Non-goals:
 - 未经授权不推送、联网或改旧IPA/用户数据
 - Scope: FocusDownloads/src, tools, tests, CI 和 _focus_ipa 入口脚本

@@ -2,8 +2,12 @@
   "schemaVersion": "aegis.schema.v0",
   "requestedOutcome": "按 v18 审查逐项本地修复并验证，保留既有补丁和用户数据",
   "goal": "按 v18 审查逐项本地修复并验证，保留既有补丁和用户数据",
-  "successEvidence": [],
-  "stopCondition": "Stop when success evidence is satisfied or a blocker/risk requires pause.",
+  "successEvidence": [
+    "逐项实现与独立规格/质量回读",
+    "本机39包装回归与同源CI Foundation/UIKit/arm64/provenance全部通过",
+    "全新未重签IPA独立读回通过，旧产物SHA不变"
+  ],
+  "stopCondition": "代码修复、已列回归/CI与新未重签IPA交付完成；真实Focus真机验收明确未覆盖，不代签安装",
   "nonGoals": [
     "未经授权不推送、联网或改旧IPA/用户数据"
   ],

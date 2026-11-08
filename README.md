@@ -38,7 +38,7 @@
 python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-CI 产物名包含补丁版本和 Git SHA，含 `FocusDM.dylib` 与 `FocusDM.provenance.json`。源与库身份不匹配即拒绝打包；来源清单是内部一致性核验，不是第三方签名证明。
+CI 产物名包含补丁版本和 Git SHA，含 `FocusDM.dylib` 与 `FocusDM.provenance.json`。源与库身份不匹配即拒绝打包；来源清单是内部一致性核验，不是第三方签名证明。重复打包时 `--source-root` 必须是来源清单 `source_sha` 对应的 checkout（即使后续只有文档提交也需锁定这个提交）；交付 IPA 的编译源码是 `afb5b4d2c80c39e4c0d5e0823b5a4a5fe9ce0d69`。
 
 ## 安全打包
 

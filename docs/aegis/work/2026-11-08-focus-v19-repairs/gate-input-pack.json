@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "baselineRefs": [
+    "docs/aegis/baseline/2026-11-08-focus-v19-current.md"
+  ],
+  "impactStatement": "docs/aegis/work/2026-11-08-focus-v19-repairs/impact-statement-draft.json",
+  "compatPlan": "旧 tasks/history 数组与 resume 文件兼容；现有 VIP 等补丁不扩大",
+  "retirementPlan": "旧重复owner、短钩子、定时快照、UI猜完成、猜路径删除和dylib旧默认入口责任已退役；旧用户文件保留",
+  "evidenceBundle": [
+    "docs/aegis/work/2026-11-08-focus-v19-repairs/evidence-bundle-draft-whole-repair.json"
+  ]
+}

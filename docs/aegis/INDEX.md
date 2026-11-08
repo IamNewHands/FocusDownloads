@@ -18,3 +18,8 @@ Entries are workspace records, not authoritative runtime decisions.
 | 2026-11-08 | plan | docs/aegis/plans/2026-11-08-focus-v19-repairs.md | Focus v19 逐项修复计划 |
 | 2026-11-08 | artifact | docs/aegis/work/2026-11-08-focus-v19-repairs/resume-state-hint.json | 2026-11-08-focus-v19-repairs resume state hint |
 | 2026-11-08 | work | docs/aegis/work/2026-11-08-focus-v19-repairs/30-repair-status.md | Focus v19 逐项修复状态 |
+| 2026-11-08 | adr | docs/aegis/adr/ADR-0001-safe-download-owner-and-typed-icons.md | ADR-0001 - 单一下载状态owner与类型化图标缓存 |
+| 2026-11-08 | baseline | docs/aegis/baseline/2026-11-08-focus-v19-current.md | Focus v19 已验证实现基线 |
+| 2026-11-08 | artifact | docs/aegis/work/2026-11-08-focus-v19-repairs/evidence-bundle-draft-whole-repair.json | 2026-11-08-focus-v19-repairs evidence whole-repair |
+| 2026-11-08 | artifact | docs/aegis/work/2026-11-08-focus-v19-repairs/gate-input-pack.json | 2026-11-08-focus-v19-repairs gate input pack |
+| 2026-11-08 | work | docs/aegis/work/2026-11-08-focus-v19-repairs/proof-bundle.md | 2026-11-08-focus-v19-repairs proof bundle |
