@@ -26,7 +26,7 @@
 
 ## 构建与验证
 
-本机 Windows 不编译 iOS；现有 GitHub Actions 在 `macos-14` 执行：
+本机 Windows 不编译 iOS；现有 GitHub Actions 在 `macos-15` 执行：
 
 1. Python 安全包装回归（本机有原 IPA 时另核对旧 v18 完整前像）。
 2. Foundation 原生回归：真实引擎配显式 FakeSession，不联网，覆盖任务/暂停/恢复/删除/保存时序。
