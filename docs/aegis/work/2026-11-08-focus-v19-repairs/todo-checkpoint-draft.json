@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-11-08-focus-v19-repairs",
+  "currentTodo": "实现已冻结并暂存；缓存stage1无阻断，stage2最终质量复核待返回；macOS原生CI待执行",
+  "completedTodos": [
+    "包装39/39 PASS；全部静态规格复核问题已修；Engine/Store/UI/Host/打包stage2确认无剩余已证实阻断；旧IPA和库SHA不变"
+  ],
+  "activeSlice": "ci-candidate",
+  "evidenceRefs": [
+    "39项Python包装回归PASS，实际v18完整前像重建432diff，源语法与gitdiffcheckPASS"
+  ],
+  "blockedOn": null,
+  "nextStep": "最后缓存质量回读后本地提交与授权main推送，执行同源SHA CI",
+  "updatedAt": "2026-11-08"
+}

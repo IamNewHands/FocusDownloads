@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "taskId": "2026-11-08-focus-v19-repairs",
+  "taskIntentRef": "docs/aegis/work/2026-11-08-focus-v19-repairs/task-intent-draft.json",
+  "baselineRefs": [
+    "D:\\GitHub_Clone\\_artifacts\\focusdm\\Focus-v18-review-20261108.md"
+  ],
+  "scopeStatus": "not-yet-verified",
+  "compatStatus": "not-yet-verified",
+  "retirementStatus": "not-yet-verified",
+  "newRiskSignals": [
+    "文件归属、持久化兼容、异步回调和私有宿主接口"
+  ],
+  "decision": "needs-baseline-readback"
+}

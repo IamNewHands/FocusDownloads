@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "affectedLayers": [],
+  "owners": [
+    "FDMEngine/FDMIconCache/原生菜单入口"
+  ],
+  "invariants": [
+    "不猜文件归属，不以UI推测完成，不让旧回调覆盖新任务"
+  ],
+  "compatBoundary": "旧 tasks/history 数组与 resume 文件兼容；现有 VIP 等补丁不扩大",
+  "nonGoals": [
+    "未经授权不推送、联网或改旧IPA/用户数据"
+  ]
+}

@@ -1,0 +1,193 @@
+{
+  "schema_version": 1,
+  "description": "Reviewed Focus 2.9.7 v1-v18 business patches; load command and minimum iOS are handled separately.",
+  "original_ipa_sha256": "377d37baf421ca90819a1a1624498be7776e553bb982a55f1a1173425ab9ae71",
+  "original_executable_sha256": "6af11eb309cc7f2d75bd87ddaf4f6fb231305825a876678ae1414e2b7fcf424c",
+  "reference_v18_executable_sha256": "566f5827bffcb4cda278361dd8c2b8dfba1441af9e904ec220b244adfe201e87",
+  "executable_size": 10351024,
+  "business_patched_executable_sha256": "4d878a5a671fd7c1ef780c7a6d6ac416530cf421ccf3785f66f984fe920efae5",
+  "business_diff_bytes": 383,
+  "reference_total_diff_bytes": 432,
+  "patches": [
+    {
+      "id": "resign-check",
+      "offset": 230392,
+      "size": 8,
+      "old_hex": "ffc301d1fc6f01a9",
+      "new_hex": "20008052c0035fd6",
+      "code_cave": false
+    },
+    {
+      "id": "vip-getter",
+      "offset": 3092552,
+      "size": 8,
+      "old_hex": "00204039c0035fd6",
+      "new_hex": "20008052c0035fd6",
+      "code_cave": false
+    },
+    {
+      "id": "cloud-availability",
+      "offset": 1154752,
+      "size": 8,
+      "old_hex": "f44fbea9fd7b01a9",
+      "new_hex": "00008052c0035fd6",
+      "code_cave": false
+    },
+    {
+      "id": "cloud-initialization",
+      "offset": 633040,
+      "size": 8,
+      "old_hex": "ff8301d1f65703a9",
+      "new_hex": "c0035fd61f2003d5",
+      "code_cave": false
+    },
+    {
+      "id": "cloud-sync-records",
+      "offset": 637264,
+      "size": 8,
+      "old_hex": "ff8302d1fa6705a9",
+      "new_hex": "c0035fd61f2003d5",
+      "code_cave": false
+    },
+    {
+      "id": "locale-load",
+      "offset": 3215280,
+      "size": 4,
+      "old_hex": "a00500b5",
+      "new_hex": "2d000014",
+      "code_cave": false
+    },
+    {
+      "id": "locale-parse",
+      "offset": 3213184,
+      "size": 4,
+      "old_hex": "800500b5",
+      "new_hex": "2c000014",
+      "code_cave": false
+    },
+    {
+      "id": "bookmark-picker-forwarder",
+      "offset": 12288,
+      "size": 72,
+      "old_hex": "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "new_hex": "fd7bbda9fd030091f35301a9f51300f9f30300aaf40302aaf50301aae00303aa02008052af4d1594e30300aae00313aae10315aae20314aaf51340f9f35341a9fd7bc3a8471f0514",
+      "code_cave": true
+    },
+    {
+      "id": "bookmark-picker-selector",
+      "offset": 12368,
+      "size": 39,
+      "old_hex": "000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "new_hex": "646f63756d656e745069636b65723a6469645069636b446f63756d656e7473417455524c733a00",
+      "code_cave": true
+    },
+    {
+      "id": "bookmark-picker-method",
+      "offset": 8638688,
+      "size": 24,
+      "old_hex": "fd35720001000000d9e275000100000060ad140001000000",
+      "new_hex": "5030000001000000d9e27500010000000030000001000000",
+      "code_cave": false
+    },
+    {
+      "id": "bookmark-fixed-path-thunk",
+      "offset": 13312,
+      "size": 223,
+      "old_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "new_hex": "fd7bbca9fd030091f35301a9f55b02a9f30300aa68470090009146f969f41494f40300aae00314aa2201805223008052040080d205008052060080d2c9b11494f40300aa68470090006d44f9220400108ccd1594e20300aae00314aaa1b11494f40300aa68470090006d44f9e20314aa83008052040080d25acd1594000200b4f50300aa684700b0003d44f9549b1494f60300aae00313aae20316aa019e1594e00316aae20315aa3e511594f55b42a9f35341a9fd7bc4a8c0035fd6e00313aaf55b42a9f35341a9fd7bc4a8bc1d0514426f6f6b6d61726b732e68746d6c00",
+      "code_cave": true
+    },
+    {
+      "id": "bookmark-import-method",
+      "offset": 8638640,
+      "size": 24,
+      "old_hex": "5fb76f0001000000b6e1750001000000bcab140001000000",
+      "new_hex": "5fb76f0001000000b6e17500010000000034000001000000",
+      "code_cave": false
+    },
+    {
+      "id": "umeng-bootstrap",
+      "offset": 2532460,
+      "size": 4,
+      "old_hex": "f44fbea9",
+      "new_hex": "c0035fd6",
+      "code_cave": false
+    },
+    {
+      "id": "umeng-config-initialize",
+      "offset": 5300748,
+      "size": 4,
+      "old_hex": "ff0302d1",
+      "new_hex": "c0035fd6",
+      "code_cave": false
+    },
+    {
+      "id": "umeng-config-load",
+      "offset": 5300132,
+      "size": 4,
+      "old_hex": "fd7bbfa9",
+      "new_hex": "c0035fd6",
+      "code_cave": false
+    },
+    {
+      "id": "umeng-mobclick-load",
+      "offset": 5142196,
+      "size": 4,
+      "old_hex": "fd7bbfa9",
+      "new_hex": "c0035fd6",
+      "code_cave": false
+    },
+    {
+      "id": "umeng-network-load",
+      "offset": 4550136,
+      "size": 4,
+      "old_hex": "fd7bbfa9",
+      "new_hex": "c0035fd6",
+      "code_cave": false
+    },
+    {
+      "id": "umeng-launch-load",
+      "offset": 4609712,
+      "size": 4,
+      "old_hex": "fd7bbfa9",
+      "new_hex": "c0035fd6",
+      "code_cave": false
+    },
+    {
+      "id": "umeng-resolve-post",
+      "offset": 5271788,
+      "size": 4,
+      "old_hex": "fa67bba9",
+      "new_hex": "c0035fd6",
+      "code_cave": false
+    },
+    {
+      "id": "umeng-resolve-sub-post",
+      "offset": 5272248,
+      "size": 4,
+      "old_hex": "f657bda9",
+      "new_hex": "c0035fd6",
+      "code_cave": false
+    }
+  ],
+  "methods": [
+    {
+      "owner": "BookMarkController",
+      "entry_address": 4303605936,
+      "old_selector": "importBookmarks",
+      "new_selector": "importBookmarks",
+      "types": "v16@0:8",
+      "old_implementation": 4296321980,
+      "new_implementation": 4294980608
+    },
+    {
+      "owner": "BookMarkController",
+      "entry_address": 4303605984,
+      "old_selector": "documentPicker:didPickDocumentAtURL:",
+      "new_selector": "documentPicker:didPickDocumentsAtURLs:",
+      "types": "v32@0:8@16@24",
+      "old_implementation": 4296322400,
+      "new_implementation": 4294979584
+    }
+  ]
+}

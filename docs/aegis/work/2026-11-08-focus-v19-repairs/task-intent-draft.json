@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "requestedOutcome": "按 v18 审查逐项本地修复并验证，保留既有补丁和用户数据",
+  "goal": "按 v18 审查逐项本地修复并验证，保留既有补丁和用户数据",
+  "successEvidence": [],
+  "stopCondition": "Stop when success evidence is satisfied or a blocker/risk requires pause.",
+  "nonGoals": [
+    "未经授权不推送、联网或改旧IPA/用户数据"
+  ],
+  "scope": "FocusDownloads/src, tools, tests, CI 和 _focus_ipa 入口脚本",
+  "changeKinds": [
+    "bugfix"
+  ],
+  "riskHints": [
+    "文件归属、持久化兼容、异步回调和私有宿主接口"
+  ]
+}

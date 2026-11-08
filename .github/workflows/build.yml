@@ -5,32 +5,63 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   dylib:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build arm64 dylib
+      - name: Python packaging regression
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Foundation native regression
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra \
+            -DFDM_TESTING=1 -Isrc \
+            -framework Foundation \
+            src/FDMCommon.m src/FDMStore.m src/FDMEngine.m src/FDMHostDownloads.m \
+            tests/native_main.m tests/engine_regression.m tests/host_regression.m tests/owner_edge_regression.m tests/malformed_regression.m \
+            -o build/foundation-regression
+          build/foundation-regression
+
+      - name: UIKit icon regression in simulator
+        run: python3 tests/run_icons_simulator.py
+
+      - name: Build all arm64 modules
         run: |
           set -euo pipefail
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          echo "SDK=$SDK"
           xcrun --sdk iphoneos clang -arch arm64 \
-            -miphoneos-version-min=14.0 \
-            -isysroot "$SDK" \
-            -fobjc-arc -O2 -Wall \
+            -miphoneos-version-min=14.0 -isysroot "$SDK" \
+            -fobjc-arc -fblocks -O2 -Wall -Wextra \
+            -DFDM_PATCH_VERSION='"v19"' \
+            -DFDM_BUILD_REVISION='"'"$GITHUB_SHA"'"' \
             -dynamiclib \
             -install_name @executable_path/Frameworks/FocusDM.dylib \
-            -framework UIKit -framework Foundation \
-            -o FocusDM.dylib src/FocusDM.m
-          echo "--- result ---"
-          lipo -info FocusDM.dylib
-          ls -l FocusDM.dylib
-          shasum -a 256 FocusDM.dylib
+            -framework UIKit -framework Foundation -framework QuartzCore \
+            -framework ImageIO -framework QuickLook \
+            -o build/FocusDM.dylib src/*.m
+          lipo -info build/FocusDM.dylib
+          shasum -a 256 build/FocusDM.dylib
+
+      - name: Verify compiled provenance
+        run: |
+          set -euo pipefail
+          python3 tools/provenance.py \
+            --library build/FocusDM.dylib \
+            --source-root "$GITHUB_WORKSPACE" \
+            --source-sha "$GITHUB_SHA" --patch-version v19 \
+            --output build/FocusDM.provenance.json
 
       - uses: actions/upload-artifact@v4
         with:
-          name: FocusDM-dylib
-          path: FocusDM.dylib
+          name: FocusDM-v19-${{ github.sha }}
+          path: |
+            build/FocusDM.dylib
+            build/FocusDM.provenance.json
           if-no-files-found: error
