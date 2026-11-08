@@ -52,7 +52,7 @@ def main():
     command = ["xcrun", "--sdk", "iphonesimulator", "clang", "-isysroot", sdk,
                "-fobjc-arc", "-fblocks", "-DFDM_TESTING=1", "-Wall", "-Wextra", "-Isrc",
                "-mios-simulator-version-min=14.0", "-framework", "UIKit", "-framework", "Foundation",
-               "-framework", "QuartzCore", "-framework", "ImageIO", "-framework", "QuickLook",
+               "-framework", "QuartzCore", "-framework", "CoreGraphics", "-framework", "ImageIO", "-framework", "QuickLook",
                "src/FDMCommon.m", "src/FDMStore.m", "src/FDMEngine.m", "src/FDMHostDownloads.m",
                "src/FDMDownloadsViewController.m", "src/FDMIcons.m", "src/FDMIconDiagnostics.m",
                "tests/icons_regression.m", "tests/forms_regression.m",

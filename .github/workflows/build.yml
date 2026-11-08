@@ -43,7 +43,7 @@ jobs:
             -DFDM_BUILD_REVISION='"'"$GITHUB_SHA"'"' \
             -dynamiclib \
             -install_name @executable_path/Frameworks/FocusDM.dylib \
-            -framework UIKit -framework Foundation -framework QuartzCore \
+            -framework UIKit -framework Foundation -framework QuartzCore -framework CoreGraphics \
             -framework ImageIO -framework QuickLook \
             -o build/FocusDM.dylib src/*.m
           lipo -info build/FocusDM.dylib
