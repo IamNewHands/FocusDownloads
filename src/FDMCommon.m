@@ -196,7 +196,7 @@ BOOL FDMValidStoredRecord(id value) {
     if (!FDMString(row[@"key"]).length) return NO;
     NSArray *strings = @[@"url", @"name", @"path", @"relativePath", @"legacyKey", @"error", @"actionError", @"completionEvidence", @"resumeRelativePath", @"legacyResumeRelativePath"];
     for (NSString *key in strings) if (row[key] && ![row[key] isKindOfClass:NSString.class]) return NO;
-    NSArray *numbers = @[@"schema", @"state", @"generation", @"taskIdentifier", @"received", @"total", @"size", @"speed", @"progress", @"time", @"completedAt", @"source", @"hostStatus", @"pausing", @"pauseIntent", @"resumeRequested", @"resumeRejected", @"canResume"];
+    NSArray *numbers = @[@"schema", @"state", @"generation", @"taskIdentifier", @"received", @"total", @"size", @"speed", @"progress", @"time", @"completedAt", @"source", @"hostStatus", @"pausing", @"pauseIntent", @"resumeRequested", @"resumeRejected", @"usedResume", @"canResume"];
     for (NSString *key in numbers) if (row[key] && ![row[key] isKindOfClass:NSNumber.class]) return NO;
     if (!row[@"state"] || [row[@"state"] integerValue] < FDMStateDownloading || [row[@"state"] integerValue] > FDMStateInterrupted) return NO;
     if (row[@"fileIdentity"] && ![row[@"fileIdentity"] isKindOfClass:NSDictionary.class]) return NO;

@@ -96,7 +96,7 @@ void FDMRunOwnerEdgeRegression(void) {
     NSString *historyPath = [FDMDirectory(@"FocusDM") stringByAppendingPathComponent:@"history.json"];
     NSCAssert(FDMWriteJSON(@{@"records": @42}, historyPath, &error), @"invalid container fixture");
     FDMStore *isolated = [FDMStore new];
-    NSCAssert(isolated.records.count == 0 && ![isolated upsertRecord:@{@"key": @"forbidden", @"state": @1} error:&error], @"invalid records container degrades without exception or overwrite");
+    NSCAssert((isolated.records.count == 0 && ![isolated upsertRecord:@{@"key": @"forbidden", @"state": @1} error:&error]), @"invalid records container degrades without exception or overwrite");
     NSCAssert(history && [history writeToFile:historyPath atomically:YES], @"restore only fixture history");
     printf("owner edge regression: finish-only durability, background batch, damaged storage passed\n");
 }

@@ -49,7 +49,7 @@ static void FDMRunCommonRegression(void) {
     NSDictionary *row = @{@"key": @"common-record", @"state": @(FDMStateFailed), @"url": @"https://example.com/a"};
     NSCAssert([FDMStore.shared upsertRecord:row error:&error], @"history write");
     NSArray *before = [FDMStore.shared records];
-    NSCAssert([FDMStore.shared upsertRecord:@{@"key": @"common-record", @"state": @(FDMStateCompleted)} error:&error], @"replace record");
+    NSCAssert(([FDMStore.shared upsertRecord:@{@"key": @"common-record", @"state": @(FDMStateCompleted)} error:&error]), @"replace record");
     NSDictionary *old = [before filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"key == %@", @"common-record"]].firstObject;
     NSCAssert([old[@"state"] integerValue] == FDMStateFailed, @"history immutable snapshot survives update");
     NSCAssert([FDMStore.shared dropKey:@"common-record" error:&error], @"history drop");

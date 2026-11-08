@@ -334,6 +334,7 @@ static const void *FDMEngineQueueKey = &FDMEngineQueueKey;
     row[@"pausing"] = @NO;
     row[@"pauseIntent"] = @NO;
     row[@"speed"] = @0;
+    row[@"usedResume"] = @(resume);
     [row removeObjectForKey:@"error"];
     [row removeObjectForKey:@"actionError"];
     [row removeObjectForKey:@"resumeRequested"];
@@ -653,9 +654,9 @@ static const void *FDMEngineQueueKey = &FDMEngineQueueKey;
         if ([row[@"state"] integerValue] != FDMStateCompleted) {
             NSData *data = error.userInfo[NSURLSessionDownloadTaskResumeData];
             if ([data isKindOfClass:NSData.class] && data.length) [self saveResume:data item:row];
-            if ([error.domain isEqual:NSURLErrorDomain] && error.code == NSURLErrorCannotResume) {
+            if ([row[@"usedResume"] boolValue] && error && ![self resumeData:row].length) {
                 row[@"resumeRejected"] = @YES;
-                row[@"error"] = @"系统拒绝续传数据，请重新下载";
+                row[@"error"] = [NSString stringWithFormat:@"续传未完成：%@；没有新的续传数据，请重新下载", error.localizedDescription ?: @"系统下载失败"];
             } else if (!row[@"error"]) row[@"error"] = error.localizedDescription ?: @"下载未完成文件保存，请重试";
             row[@"state"] = @([self resumeData:row].length ? FDMStateInterrupted : FDMStateFailed);
             row[@"speed"] = @0;
