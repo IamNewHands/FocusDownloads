@@ -268,10 +268,11 @@ static BOOL FDMAppendCanonical(NSMutableString *out, id value, NSError **error) 
         return YES;
     }
     if ([value isKindOfClass:NSNumber.class]) {
-        if (CFGetTypeID((__bridge CFTypeRef)value) == CFBooleanGetTypeID()) { [out appendString:[value boolValue] ? @"true" : @"false"]; return YES; }
-        double raw = [value doubleValue];
+        NSNumber *number = value;
+        if (CFGetTypeID((__bridge CFTypeRef)number) == CFBooleanGetTypeID()) { [out appendString:number.boolValue ? @"true" : @"false"]; return YES; }
+        double raw = number.doubleValue;
         if (!isfinite(raw)) { if (error) *error = FDMJSONError(@"数值不是有限数"); return NO; }
-        [out appendString:value.stringValue];
+        [out appendString:number.stringValue];
         return YES;
     }
     if ([value isKindOfClass:NSArray.class]) {
@@ -286,15 +287,16 @@ static BOOL FDMAppendCanonical(NSMutableString *out, id value, NSError **error) 
         return YES;
     }
     if ([value isKindOfClass:NSDictionary.class]) {
+        NSDictionary *object = value;
         [out appendString:@"{"];
         BOOL first = YES;
-        for (NSString *key in [value.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+        for (NSString *key in [object.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
             if (![key isKindOfClass:NSString.class]) { if (error) *error = FDMJSONError(@"对象键必须是字符串"); return NO; }
             if (!first) [out appendString:@","];
             first = NO;
             if (!FDMAppendCanonical(out, key, error)) return NO;
             [out appendString:@":"];
-            if (!FDMAppendCanonical(out, value[key], error)) return NO;
+            if (!FDMAppendCanonical(out, object[key], error)) return NO;
         }
         [out appendString:@"}"];
         return YES;

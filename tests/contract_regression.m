@@ -26,7 +26,9 @@ static void FDMTestJSON(void) {
     FDMCheck(FDMJSONParseData(FDMData(@"{ \"n\": 1. }"), &error) == nil, @"bare fraction rejected");
     FDMCheck(FDMJSONParseData(FDMData(@"{} trailing"), &error) == nil, @"trailing content rejected");
     FDMCheck(FDMJSONParseData(FDMData(@"\"unterminated"), &error) == nil, @"unterminated string rejected");
-    FDMCheck(FDMJSONParseData([@"{ \"n\": \"\xFF\xFE\" }" dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data], &error) == nil, @"invalid UTF-8 rejected");
+    // Bytes that are not valid UTF-8 must be refused, not silently replaced.
+    const unsigned char invalid[] = {'{', ' ', '"', 'n', '"', ':', ' ', '"', 0xFF, 0xFE, '"', ' ', '}'};
+    FDMCheck(FDMJSONParseData([NSData dataWithBytes:invalid length:sizeof(invalid)], &error) == nil, @"invalid UTF-8 rejected");
 
     // Depth bound: 40 nested arrays exceed the 32-level contract.
     NSMutableString *deep = [NSMutableString string];
@@ -52,7 +54,8 @@ static void FDMTestJSON(void) {
     NSData *left = FDMJSONCanonicalData(@{@"b": @2, @"a": @1}, &error);
     NSData *right = FDMJSONCanonicalData(@{@"a": @1, @"b": @2}, &error);
     FDMCheck([left isEqualToData:right], @"canonical output is order independent");
-    FDMCheck([FDMJSONCanonicalData(@{@"n": @(NAN)}, &error) == nil, @"non-finite number cannot be encoded");
+    NSData *nonFinite = FDMJSONCanonicalData(@{@"n": @(NAN)}, &error);
+    FDMCheck(nonFinite == nil, @"non-finite number cannot be encoded");
     printf("json contract passed\n");
 }
 
@@ -133,10 +136,18 @@ static void FDMTestBackupContainer(void) {
     FDMCheck([decoded.categories[FDMBackupCategorySitePolicies].payload isEqualToData:policyPayload], @"payload bytes preserved");
     FDMCheck([decoded.producerVersion isEqual:@"v20"], @"producer version preserved");
 
-    // Tampering with the payload breaks the declared hash.
+    // Tampering with the payload breaks the declared hash. The payload is base64, so change one
+    // character of it rather than the container's own text.
     NSString *text = [[NSString alloc] initWithData:encoded encoding:NSUTF8StringEncoding];
-    NSString *tampered = [text stringByReplacingOccurrencesOfString:@"eyJzY2hlbWFWZXJzaW9uIjox" withString:@"eyJzY2hlbWFWZXJzaW9uIjox"];
-    FDMCheck([tampered isEqual:text] || FDMBackupDecode(FDMData(tampered), &error) != nil, @"unchanged text still decodes");
+    NSRange payloadRange = [text rangeOfString:@"\"dataBase64\":\""];
+    FDMCheck(payloadRange.location != NSNotFound, @"container carries an encoded payload");
+    NSUInteger payloadStart = NSMaxRange(payloadRange);
+    FDMCheck(payloadStart < text.length, @"payload is not empty");
+    unichar original = [text characterAtIndex:payloadStart];
+    unichar replacement = original == 'A' ? 'B' : 'A';
+    NSString *tampered = [text stringByReplacingCharactersInRange:NSMakeRange(payloadStart, 1)
+                                                      withString:[NSString stringWithCharacters:&replacement length:1]];
+    FDMCheck(FDMBackupDecode(FDMData(tampered), &error) == nil, @"tampered payload rejected by hash");
 
     // Duplicate categories, unknown top-level fields and unsupported versions are refused.
     NSString *duplicate = [text stringByReplacingOccurrencesOfString:@"\"categories\":["
@@ -152,9 +163,19 @@ static void FDMTestBackupContainer(void) {
     NSString *duplicateKey = [text stringByReplacingOccurrencesOfString:@"\"format\":\"ios-browser-backup\""
                                                              withString:@"\"format\":\"ios-browser-backup\",\"format\":\"ios-browser-backup\""];
     FDMCheck(FDMBackupDecode(FDMData(duplicateKey), &error) == nil, @"duplicate container key rejected");
-    // A declared length that disagrees with the decoded bytes is refused.
-    NSString *badLength = [text stringByReplacingOccurrencesOfString:@"\"byteLength\":" withString:@"\"byteLength\":9"];
-    FDMCheck(FDMBackupDecode(FDMData(badLength), &error) == nil || YES, @"length mismatch path exercised");
+    // A declared byteLength that disagrees with the decoded bytes must be refused.
+    NSString *badLength = [text stringByReplacingOccurrencesOfString:@"\"byteLength\":"
+                                                          withString:@"\"byteLength\":1"];
+    FDMCheck(FDMBackupDecode(FDMData(badLength), &error) == nil, @"length mismatch rejected");
+    // Base64 that is not valid must be refused before any decode budget is spent.
+    NSString *badBase64 = [text stringByReplacingOccurrencesOfString:@"\"dataBase64\":\""
+                                                          withString:@"\"dataBase64\":\"!!!!"];
+    FDMCheck(FDMBackupDecode(FDMData(badBase64), &error) == nil, @"invalid base64 rejected");
+    // An unknown but well-formed category is reported, not applied.
+    NSString *unknownCategory = [text stringByReplacingOccurrencesOfString:@"\"id\":\"sitePolicies\""
+                                                                withString:@"\"id\":\"unknownCategory\""];
+    FDMBackupContainer *unknown = FDMBackupDecode(FDMData(unknownCategory), &error);
+    FDMCheck(unknown && [unknown.unsupportedCategories containsObject:@"unknownCategory"], @"unknown category reported as unsupported");
 
     FDMCheck(FDMBackupCategorySelectedByDefault(FDMBackupCategoryScripts) == NO, @"scripts are opt-in");
     FDMCheck(FDMBackupCategorySelectedByDefault(FDMBackupCategoryBookmarks) == YES, @"bookmarks default on");
