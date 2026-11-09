@@ -48,7 +48,10 @@ static void FDMCancelPending(FDMNavigationBinding *binding) {
 }
 static BOOL FDMHook(Class cls, SEL selector, IMP implementation, IMP *original) {
     Method method = cls ? class_getInstanceMethod(cls, selector) : NULL;
-    if (!method) return NO;
+    if (!method) {
+        if (cls) FDMLog(@"navigation hook missing %@ %@", NSStringFromClass(cls), NSStringFromSelector(selector));
+        return NO;
+    }
     IMP old = method_getImplementation(method); if (old == implementation) return YES;
     if (original) *original = old;
     if (!class_addMethod(cls, selector, implementation, method_getTypeEncoding(method))) method_setImplementation(method, implementation);

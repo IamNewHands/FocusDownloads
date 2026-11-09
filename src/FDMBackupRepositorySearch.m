@@ -22,8 +22,8 @@ static NSError *FDMRepoError(NSString *message) {
 @interface FDMBackupBlobStagedSet : NSObject <FDMBackupStagedSet>
 @property (nonatomic, copy) NSData *beforeSnapshot;
 @property (nonatomic, copy) NSData *afterSnapshot;
-@property (nonatomic, copy) NSData *beforeBlob;
-@property (nonatomic, copy) NSData *afterBlob;
+@property (nonatomic, copy) NSArray<NSDictionary *> *beforeBlob;
+@property (nonatomic, copy) NSArray<NSDictionary *> *afterBlob;
 @end
 
 @implementation FDMBackupBlobStagedSet

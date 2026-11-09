@@ -64,6 +64,10 @@ static NSArray<NSString *> *FDMPolicyOptionsForField(NSString *field) {
     [self reload];
 }
 
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self.navigationController setNavigationBarHidden:NO animated:animated];
+}
 - (void)dealloc {
     if (_observer) [NSNotificationCenter.defaultCenter removeObserver:_observer];
 }
@@ -269,16 +273,20 @@ static NSArray<NSString *> *FDMPolicyOptionsForField(NSString *field) {
     __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        typeof(self) owner = weakSelf;
+        if (!owner) return;
         NSString *text = alert.textFields.firstObject.text ?: @"";
         double value = text.doubleValue;
         if (text.length && isfinite(value) && value >= 0.5 && value <= 3.0) {
-            weakSelf->_draft[field] = @(value);
-            [weakSelf.tableView reloadData];
+            owner->_draft[field] = @(value);
+            [owner.tableView reloadData];
         }
     }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"继承全局" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
-        [weakSelf->_draft removeObjectForKey:field];
-        [weakSelf.tableView reloadData];
+        typeof(self) owner = weakSelf;
+        if (!owner) return;
+        [owner->_draft removeObjectForKey:field];
+        [owner.tableView reloadData];
     }]];
     [self presentViewController:alert animated:YES completion:nil];
 }
@@ -294,10 +302,12 @@ static NSArray<NSString *> *FDMPolicyOptionsForField(NSString *field) {
     __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        typeof(self) owner = weakSelf;
+        if (!owner) return;
         NSString *text = [alert.textFields.firstObject.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-        if (text.length) weakSelf->_draft[field] = text;
-        else [weakSelf->_draft removeObjectForKey:field];
-        [weakSelf.tableView reloadData];
+        if (text.length) owner->_draft[field] = text;
+        else [owner->_draft removeObjectForKey:field];
+        [owner.tableView reloadData];
     }]];
     [self presentViewController:alert animated:YES completion:nil];
 }

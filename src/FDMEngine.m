@@ -3,6 +3,7 @@
 #import "FDMIntent.h"
 #import "FDMVault.h"
 #import "FDMJSON.h"
+#import "FDMPolicy.h"
 
 static const void *FDMEngineQueueKey = &FDMEngineQueueKey;
 
