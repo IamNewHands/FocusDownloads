@@ -2,7 +2,6 @@
 #import "FDMEngine.h"
 #import "FDMStore.h"
 #import "FDMHostDownloads.h"
-#import "FDMIcons.h"
 #import <QuickLook/QuickLook.h>
 
 static NSString *FDMRowStateText(NSDictionary *row) {
@@ -11,6 +10,9 @@ static NSString *FDMRowStateText(NSDictionary *row) {
         if ([row[@"hostStatus"] isEqual:@9]) return @"移除中";
         return @"暂停中";
     }
+    NSInteger scheduler = [row[@"schedulerStatus"] integerValue];
+    if (scheduler == FDMSchedulerWaiting) return @"等待中";
+    if (scheduler == FDMSchedulerNeedsContext) return [row[@"state"] integerValue] == FDMStateCompleted ? @"已完成" : @"需要重新发起";
     switch ([row[@"state"] integerValue]) {
         case FDMStateDownloading: return [row[@"hostStatus"] isEqual:@0] ? @"等待连接" : @"下载中";
         case FDMStatePaused: return @"已暂停";
@@ -18,6 +20,13 @@ static NSString *FDMRowStateText(NSDictionary *row) {
         case FDMStateFailed: return @"失败";
         default: return @"已中断";
     }
+}
+
+static NSString *FDMRowTransportText(NSDictionary *row) {
+    NSInteger transport = [row[@"transport"] integerValue];
+    if (transport == FDMTransportWebKitDownload) return @"网页原请求";
+    if (transport == FDMTransportCredentialedSession) return @"登录上下文";
+    return @"匿名后台";
 }
 
 static NSString *FDMRowDetail(NSDictionary *row) {
@@ -39,7 +48,11 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     NSString *error = FDMString(row[@"actionError"]) ?: FDMString(row[@"error"]);
     if (error.length) [parts addObject:error];
     else if (FDMString(row[@"statusDetail"]).length) [parts addObject:row[@"statusDetail"]];
+    else if (FDMString(row[@"waitReason"]).length) [parts addObject:row[@"waitReason"]];
     else if (state == FDMStatePaused || state == FDMStateInterrupted) [parts addObject:[row[@"canResume"] boolValue] ? @"可断点继续" : @"没有有效续传数据；需要重新下载"];
+    NSString *source = FDMString(row[@"sourceOrigin"]);
+    if (source.length && ![source isEqual:FDMString(row[@"targetOrigin"])]) [parts addObject:[@"来源 " stringByAppendingString:source]];
+    [parts addObject:FDMRowTransportText(row)];
     return [parts componentsJoinedByString:@" · "];
 }
 
@@ -92,14 +105,18 @@ static NSString *FDMRowDetail(NSDictionary *row) {
 }
 @end
 
-@interface FDMURLInputController : UIViewController <UITextFieldDelegate>
+@interface FDMURLInputController : UIViewController <UITextFieldDelegate, UITextViewDelegate>
 @property (nonatomic, copy) NSString *initialURL;
 @property (nonatomic, copy) BOOL (^submitURL)(NSString *, NSError **);
+// Batch submission: returns the number queued, or 0 with an error.
+@property (nonatomic, copy, nullable) NSUInteger (^submitBatch)(NSArray<NSString *> *, NSError **);
 @end
 @implementation FDMURLInputController {
-    UITextField *_address;
+    UITextView *_address;
     UILabel *_error;
+    UILabel *_hint;
     BOOL _submitted;
+    BOOL _batch;
 }
 - (void)viewDidLoad {
     [super viewDidLoad];
@@ -108,54 +125,80 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"取消" style:UIBarButtonItemStylePlain target:self action:@selector(cancel)];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"下载" style:UIBarButtonItemStyleDone target:self action:@selector(submit)];
     UILabel *label = [[UILabel alloc] init];
-    label.text = @"输入 http/https 文件直链";
+    label.text = @"输入 http/https 文件直链；每行一个地址可批量加入队列";
     label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     label.adjustsFontForContentSizeCategory = YES;
     label.numberOfLines = 0;
-    _address = [[UITextField alloc] init];
+    _address = [[UITextView alloc] init];
     _address.text = self.initialURL;
-    _address.placeholder = @"https://";
-    _address.borderStyle = UITextBorderStyleRoundedRect;
-    _address.keyboardType = UIKeyboardTypeURL;
-    _address.returnKeyType = UIReturnKeyDone;
-    _address.autocapitalizationType = UITextAutocapitalizationTypeNone;
-    _address.autocorrectionType = UITextAutocorrectionTypeNo;
     _address.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     _address.adjustsFontForContentSizeCategory = YES;
+    _address.keyboardType = UIKeyboardTypeURL;
+    _address.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    _address.autocorrectionType = UITextAutocorrectionTypeNo;
     _address.accessibilityLabel = @"下载地址";
     _address.delegate = self;
+    _address.layer.borderColor = UIColor.separatorColor.CGColor;
+    _address.layer.borderWidth = 1.0 / UIScreen.mainScreen.scale;
+    _address.layer.cornerRadius = 8;
+    _address.textContainerInset = UIEdgeInsetsMake(10, 8, 10, 8);
+    _hint = [[UILabel alloc] init];
+    _hint.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    _hint.textColor = UIColor.secondaryLabelColor;
+    _hint.adjustsFontForContentSizeCategory = YES;
+    _hint.numberOfLines = 0;
+    _hint.text = [NSString stringWithFormat:@"最多一次加入 %lu 个地址；同一地址重复提交会新建任务，不会合并。", (unsigned long)FDMBatchPreviewLimit];
     _error = [[UILabel alloc] init];
     _error.textColor = UIColor.systemRedColor;
     _error.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
     _error.adjustsFontForContentSizeCategory = YES;
     _error.numberOfLines = 0;
-    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[label, _address, _error]];
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[label, _address, _hint, _error]];
     stack.axis = UILayoutConstraintAxisVertical;
     stack.spacing = 16;
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:stack];
     UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
-    [NSLayoutConstraint activateConstraints:@[[stack.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:20], [stack.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-20], [stack.topAnchor constraintEqualToAnchor:safe.topAnchor constant:24], [_address.heightAnchor constraintGreaterThanOrEqualToConstant:44]]];
+    [NSLayoutConstraint activateConstraints:@[[stack.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:20], [stack.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-20], [stack.topAnchor constraintEqualToAnchor:safe.topAnchor constant:24], [_address.heightAnchor constraintGreaterThanOrEqualToConstant:120]]];
 }
 - (void)viewDidAppear:(BOOL)animated { [super viewDidAppear:animated]; [_address becomeFirstResponder]; }
 - (void)cancel { [self dismissViewControllerAnimated:YES completion:nil]; }
+- (NSArray<NSString *> *)lines {
+    NSMutableArray *lines = [NSMutableArray array];
+    for (NSString *line in [_address.text componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+        NSString *trimmed = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        if (trimmed.length) [lines addObject:trimmed];
+    }
+    return lines;
+}
 - (void)submit {
     if (_submitted) return;
+    NSArray *lines = [self lines];
+    NSError *error = nil;
+    if (!lines.count) { _error.text = @"请输入下载地址"; return; }
+    _batch = lines.count > 1 && self.submitBatch != nil;
+    if (_batch && lines.count > FDMBatchPreviewLimit) {
+        _error.text = [NSString stringWithFormat:@"一次最多加入 %lu 个地址，当前 %lu 个", (unsigned long)FDMBatchPreviewLimit, (unsigned long)lines.count];
+        return;
+    }
     _submitted = YES;
     self.navigationItem.rightBarButtonItem.enabled = NO;
-    NSError *error = nil;
-    if (self.submitURL && self.submitURL(_address.text ?: @"", &error)) [self dismissViewControllerAnimated:YES completion:nil];
-    else {
-        _submitted = NO;
-        self.navigationItem.rightBarButtonItem.enabled = YES;
-        _error.text = error.localizedDescription ?: @"无法开始下载，请检查地址";
-        UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, _error.text);
+    if (_batch) {
+        NSUInteger queued = self.submitBatch(lines, &error);
+        if (queued > 0) { [self dismissViewControllerAnimated:YES completion:nil]; return; }
+    } else if (self.submitURL && self.submitURL(lines.firstObject, &error)) {
+        [self dismissViewControllerAnimated:YES completion:nil];
+        return;
     }
+    _submitted = NO;
+    self.navigationItem.rightBarButtonItem.enabled = YES;
+    _error.text = error.localizedDescription ?: @"无法开始下载，请检查地址";
+    UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, _error.text);
 }
 - (BOOL)textFieldShouldReturn:(UITextField *)field { [self submit]; return NO; }
 @end
 
-@interface FDMDownloadsViewController () <QLPreviewControllerDataSource>
+@interface FDMDownloadsViewController () <QLPreviewControllerDataSource, UISearchResultsUpdating>
 @end
 @implementation FDMDownloadsViewController {
     NSArray<NSDictionary *> *_active;
@@ -169,6 +212,9 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     BOOL _navSaved;
     BOOL _navWasHidden;
     NSURL *_previewURL;
+    UISearchController *_search;
+    NSString *_query;
+    NSInteger _filter;
 }
 
 - (void)viewDidLoad {
@@ -184,6 +230,16 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     _allButton = [[UIBarButtonItem alloc] initWithTitle:@"全部暂停" style:UIBarButtonItemStylePlain target:self action:@selector(toggleAll)];
     UIBarButtonItem *more = [[UIBarButtonItem alloc] initWithTitle:@"更多" style:UIBarButtonItemStylePlain target:self action:@selector(showMore)];
     self.navigationItem.rightBarButtonItems = @[_addButton, _allButton, more];
+    _filter = -1;
+    _query = @"";
+    _search = [[UISearchController alloc] initWithSearchResultsController:nil];
+    _search.obscuresBackgroundDuringPresentation = NO;
+    _search.searchResultsUpdater = self;
+    _search.searchBar.scopeButtonTitles = @[@"全部", @"进行中", @"等待", @"已暂停", @"已完成", @"失败"];
+    _search.searchBar.delegate = (id)self;
+    self.navigationItem.searchController = _search;
+    self.navigationItem.hidesSearchBarWhenScrolling = NO;
+    self.definesPresentationContext = YES;
     if (self.navigationController.presentingViewController && self.navigationController.viewControllers.firstObject == self) {
         self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"关闭" style:UIBarButtonItemStylePlain target:self action:@selector(closePage)];
     }
@@ -278,10 +334,11 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     NSMutableArray *finished = [NSMutableArray array];
     NSMutableString *signature = [NSMutableString string];
     for (NSDictionary *row in ordered) {
+        if (![self rowMatchesFilter:row]) continue;
         NSInteger state = [row[@"state"] integerValue];
         BOOL running = state == FDMStateDownloading || state == FDMStatePaused || (state == FDMStateInterrupted && [row[@"canResume"] boolValue]);
         [(running ? active : finished) addObject:row];
-        [signature appendFormat:@"%@:%@:%ld:%d|", running ? @"A" : @"F", row[@"key"], (long)state, [row[@"pausing"] boolValue]];
+        [signature appendFormat:@"%@:%@:%ld:%d:%ld|", running ? @"A" : @"F", row[@"key"], (long)state, [row[@"pausing"] boolValue], (long)[row[@"schedulerStatus"] integerValue]];
     }
     _active = active;
     _finished = finished;
@@ -302,6 +359,37 @@ static NSString *FDMRowDetail(NSDictionary *row) {
         _restoringLabel.frame = CGRectMake(0, 0, self.tableView.bounds.size.width, 60);
         self.tableView.tableHeaderView = _restoringLabel;
     } else self.tableView.tableHeaderView = nil;
+}
+
+// Scope index 0 is 全部 and -1 means no scope selected; both accept every row.
+- (BOOL)rowMatchesFilter:(NSDictionary *)row {
+    if (_filter > 0) {
+        NSInteger state = [row[@"state"] integerValue];
+        NSInteger scheduler = [row[@"schedulerStatus"] integerValue];
+        switch (_filter) {
+            case 1: if (state != FDMStateDownloading) return NO; break;
+            case 2: if (scheduler != FDMSchedulerWaiting) return NO; break;
+            case 3: if (state != FDMStatePaused) return NO; break;
+            case 4: if (state != FDMStateCompleted) return NO; break;
+            case 5: if (state != FDMStateFailed && state != FDMStateInterrupted) return NO; break;
+            default: break;
+        }
+    }
+    if (!_query.length) return YES;
+    NSString *name = FDMString(row[@"name"]) ?: @"";
+    NSString *source = FDMString(row[@"sourceOrigin"]) ?: FDMString(row[@"targetOrigin"]) ?: FDMString(row[@"url"]) ?: @"";
+    return [name rangeOfString:_query options:NSCaseInsensitiveSearch].location != NSNotFound ||
+           [source rangeOfString:_query options:NSCaseInsensitiveSearch].location != NSNotFound;
+}
+
+- (void)updateSearchResultsForSearchController:(UISearchController *)controller {
+    _query = [controller.searchBar.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+    [self refresh];
+}
+
+- (void)searchBar:(UISearchBar *)searchBar selectedScopeButtonIndexDidChange:(NSInteger)selectedScope {
+    _filter = selectedScope;
+    [self refresh];
 }
 
 - (BOOL)canPause:(NSDictionary *)row { return [row[@"state"] integerValue] == FDMStateDownloading && ![row[@"pausing"] boolValue] && [row[@"live"] boolValue]; }
@@ -329,7 +417,7 @@ static NSString *FDMRowDetail(NSDictionary *row) {
         else if (![FDMHostDownloads.shared pauseKey:key error:&error]) [self showError:error];
     } else if ([action isEqual:@"resume"]) [FDMEngine.shared resumeKey:key];
     else if ([action isEqual:@"restart"]) {
-        if ([adapter isEqual:@"engine"] && [row[@"state"] integerValue] != FDMStateCompleted) [FDMEngine.shared restartKey:key];
+        if ([adapter isEqual:@"engine"] && [row[@"state"] integerValue] != FDMStateCompleted && [row[@"transport"] integerValue] != FDMTransportWebKitDownload) [FDMEngine.shared restartKey:key];
         else {
             NSString *newKey = [FDMEngine.shared startURL:FDMString(row[@"url"]) ?: key name:FDMString(row[@"name"]) error:&error];
             if (!newKey.length) { [self showError:error]; return; }
@@ -355,9 +443,19 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     form.initialURL = @"";
     __weak typeof(self) weakSelf = self;
     form.submitURL = ^BOOL(NSString *input, NSError **error) {
-        NSString *key = [FDMEngine.shared startURL:input name:nil error:error];
+        NSString *key = [FDMEngine.shared enqueueURL:input name:nil error:error];
         if (key.length) [weakSelf refresh];
         return key.length > 0;
+    };
+    form.submitBatch = ^NSUInteger(NSArray<NSString *> *urls, NSError **error) {
+        NSUInteger queued = 0;
+        for (NSString *url in urls) {
+            NSError *failure = nil;
+            if ([FDMEngine.shared enqueueURL:url name:nil error:&failure].length) queued++;
+            else if (error) *error = failure;
+        }
+        [weakSelf refresh];
+        return queued;
     };
     UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:form];
     [self presentController:navigation];
@@ -454,7 +552,6 @@ static NSString *FDMRowDetail(NSDictionary *row) {
 
 - (void)showMore {
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"下载管理" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"图标缓存诊断" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { [self afterCurrentPresentation:^{ [self.navigationController pushViewController:FDMCreateIconDiagnosticsViewController() animated:YES]; }]; }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"保存位置与使用说明" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         NSString *text = @"自建下载保存在“文件 → 我的 iPhone → Focus → FocusDM → downloads”。宿主下载请看每条记录的保存路径。\n\n已完成记录可点开预览或分享，使用系统分享菜单存储到其他位置。宿主下载不支持断点续传，本页会明确显示重新下载。";
         UIAlertController *help = [UIAlertController alertControllerWithTitle:@"保存位置" message:text preferredStyle:UIAlertControllerStyleAlert];

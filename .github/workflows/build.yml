@@ -24,8 +24,10 @@ jobs:
           xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra \
             -DFDM_TESTING=1 -Isrc \
             -framework Foundation \
-            src/FDMCommon.m src/FDMStore.m src/FDMEngine.m src/FDMHostDownloads.m \
-            tests/native_main.m tests/engine_regression.m tests/host_regression.m tests/owner_edge_regression.m tests/malformed_regression.m \
+            src/FDMCommon.m src/FDMStore.m src/FDMJSON.m src/FDMPolicy.m \
+            src/FDMIntent.m src/FDMBackup.m src/FDMEngine.m src/FDMHostDownloads.m \
+            tests/native_main.m tests/engine_regression.m tests/host_regression.m \
+            tests/owner_edge_regression.m tests/malformed_regression.m tests/contract_regression.m \
             -o build/foundation-regression
           build/foundation-regression
 
@@ -39,12 +41,12 @@ jobs:
           xcrun --sdk iphoneos clang -arch arm64 \
             -miphoneos-version-min=14.0 -isysroot "$SDK" \
             -fobjc-arc -fblocks -O2 -Wall -Wextra \
-            -DFDM_PATCH_VERSION='"v19"' \
+            -DFDM_PATCH_VERSION='"v20"' \
             -DFDM_BUILD_REVISION='"'"$GITHUB_SHA"'"' \
             -dynamiclib \
             -install_name @executable_path/Frameworks/FocusDM.dylib \
             -framework UIKit -framework Foundation -framework QuartzCore -framework CoreGraphics \
-            -framework ImageIO -framework QuickLook \
+            -framework ImageIO -framework QuickLook -framework WebKit \
             -o build/FocusDM.dylib src/*.m
           lipo -info build/FocusDM.dylib
           shasum -a 256 build/FocusDM.dylib
@@ -55,12 +57,12 @@ jobs:
           python3 tools/provenance.py \
             --library build/FocusDM.dylib \
             --source-root "$GITHUB_WORKSPACE" \
-            --source-sha "$GITHUB_SHA" --patch-version v19 \
+            --source-sha "$GITHUB_SHA" --patch-version v20 \
             --output build/FocusDM.provenance.json
 
       - uses: actions/upload-artifact@v4
         with:
-          name: FocusDM-v19-${{ github.sha }}
+          name: FocusDM-v20-${{ github.sha }}
           path: |
             build/FocusDM.dylib
             build/FocusDM.provenance.json

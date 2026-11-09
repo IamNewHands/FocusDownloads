@@ -7,6 +7,7 @@ void FDMRunEngineRegression(void);
 void FDMRunHostRegressionTests(void);
 void FDMRunOwnerEdgeRegression(void);
 void FDMRunMalformedTaskRegression(void);
+void FDMRunContractRegression(void);
 
 static void FDMRunCommonRegression(void) {
     NSError *error = nil;
@@ -65,6 +66,7 @@ int main(void) {
             FDMRunHostRegressionTests();
             FDMRunOwnerEdgeRegression();
             FDMRunMalformedTaskRegression();
+            FDMRunContractRegression();
             printf("all Foundation native regression suites passed\n");
             return 0;
         } @catch (NSException *exception) {

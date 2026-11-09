@@ -1,3 +1,7 @@
 build/
 *.dylib
 .DS_Store
+__pycache__/
+*.pyc
+.packaging-test-*/
+.probe-*/

@@ -1,5 +1,7 @@
 #import "FDMEngine.h"
 #import "FDMStore.h"
+#import "FDMIntent.h"
+#import "FDMWebKitDownloads.h"
 
 static const void *FDMEngineQueueKey = &FDMEngineQueueKey;
 
@@ -12,6 +14,10 @@ static const void *FDMEngineQueueKey = &FDMEngineQueueKey;
     NSMutableDictionary<NSString *, NSMutableDictionary *> *_pauses;
     NSMutableDictionary<NSString *, NSArray *> *_samples;
     NSMutableSet<NSString *> *_deleted;
+    // Request context for queued intents. Never persisted: cookies and auth headers die with the
+    // process, and a restored row without its request is reported as needsContext.
+    NSMutableDictionary<NSString *, NSURLRequest *> *_requests;
+    NSMutableDictionary<NSString *, FDMCredentialedTransport *> *_credentialed;
     NSString *_path;
     BOOL _restoring;
     BOOL _writable;
@@ -19,6 +25,7 @@ static const void *FDMEngineQueueKey = &FDMEngineQueueKey;
     BOOL _backgroundBatchConsumed;
     NSTimeInterval _lastSave;
     NSUInteger _backgroundSaveRetries;
+    NSUInteger _concurrencyLimit;
     void (^_backgroundCompletion)(void);
     NSMutableArray *_additionalBackgroundCompletions;
 }
@@ -42,6 +49,9 @@ static const void *FDMEngineQueueKey = &FDMEngineQueueKey;
     _pauses = [NSMutableDictionary dictionary];
     _samples = [NSMutableDictionary dictionary];
     _deleted = [NSMutableSet set];
+    _requests = [NSMutableDictionary dictionary];
+    _credentialed = [NSMutableDictionary dictionary];
+    _concurrencyLimit = 3;
     _path = [FDMDirectory(@"FocusDM") stringByAppendingPathComponent:@"tasks.json"];
     _writable = YES;
     _restoring = YES;
@@ -62,6 +72,11 @@ static const void *FDMEngineQueueKey = &FDMEngineQueueKey;
         [self initializeStorage];
         configuration.sessionSendsLaunchEvents = YES;
         configuration.discretionary = NO;
+        // The background transport is the anonymous one. It must not silently inherit browser
+        // cookies: a credentialed download takes the explicit per-intent transport instead.
+        configuration.HTTPShouldSetCookies = NO;
+        configuration.HTTPCookieStorage = nil;
+        configuration.URLCache = nil;
         _session = [NSURLSession sessionWithConfiguration:configuration delegate:self delegateQueue:_delegates];
         [self enumerateSystemTasks];
     }
@@ -209,6 +224,68 @@ static const void *FDMEngineQueueKey = &FDMEngineQueueKey;
     return restoring;
 }
 
+#pragma mark - scheduler
+
+- (NSUInteger)concurrencyLimit {
+    __block NSUInteger value;
+    [self sync:^{ value = self->_concurrencyLimit; }];
+    return value;
+}
+
+- (void)setConcurrencyLimit:(NSUInteger)limit {
+    NSUInteger clamped = MIN(6, MAX(1, limit));
+    dispatch_async(_queue, ^{
+        self->_concurrencyLimit = clamped;
+        [self pumpScheduler];
+    });
+}
+
+- (BOOL)isReplayableRow:(NSDictionary *)row {
+    return [row[@"replayable"] boolValue] || [row[@"transport"] integerValue] == FDMTransportAnonymousBackground;
+}
+
+- (NSUInteger)runningReplayableCount {
+    NSUInteger count = 0;
+    for (NSMutableDictionary *row in _items) {
+        if (![self isReplayableRow:row]) continue;
+        if ([row[@"state"] integerValue] == FDMStateDownloading && ![row[@"pausing"] boolValue]) count++;
+    }
+    return count;
+}
+
+// Starts queued GETs up to the limit. Only rows that never started are eligible, so a restored or
+// finished attempt is never duplicated by a queue pump.
+- (void)pumpScheduler {
+    if (_restoring) return;
+    NSUInteger running = [self runningReplayableCount];
+    BOOL changed = NO;
+    for (NSMutableDictionary *row in [_items copy]) {
+        if (running >= _concurrencyLimit) break;
+        if ([_deleted containsObject:row[@"key"]]) continue;
+        if ([row[@"schedulerStatus"] integerValue] != FDMSchedulerWaiting) continue;
+        if ([row[@"state"] integerValue] != FDMStatePaused) continue;
+        NSURLRequest *request = _requests[row[@"key"]];
+        NSError *error = nil;
+        if (![self startItem:row resume:NO request:request error:&error]) {
+            row[@"actionError"] = error.localizedDescription;
+            row[@"schedulerStatus"] = @(FDMSchedulerNeedsContext);
+            row[@"waitReason"] = error.localizedDescription;
+            continue;
+        }
+        running++;
+        changed = YES;
+    }
+    if (changed) {
+        [self persist:nil];
+        FDMNotifyRecordsChanged();
+    }
+}
+
+- (void)markSlotFreed {
+    // A slot is released only once the attempt truly converged; a cancel request alone is not enough.
+    [self pumpScheduler];
+}
+
 - (BOOL)isRemovedKey:(NSString *)key {
     __block BOOL removed;
     [self sync:^{ removed = [self->_deleted containsObject:key]; }];
@@ -232,6 +309,15 @@ static const void *FDMEngineQueueKey = &FDMEngineQueueKey;
             NSMutableDictionary *copy = [row mutableCopy];
             copy[@"canResume"] = @([self resumeData:row].length > 0);
             copy[@"restoring"] = @(self->_restoring);
+            // Rows written by v19 have no scheduler fields; project them from the legacy state
+            // instead of leaving the UI to invent a queue position.
+            if (!copy[@"schedulerStatus"]) {
+                NSInteger state = [copy[@"state"] integerValue];
+                copy[@"schedulerStatus"] = @(state == FDMStateDownloading ? FDMSchedulerRunning :
+                    (state == FDMStatePaused ? FDMSchedulerUserPaused : FDMSchedulerNeedsContext));
+            }
+            if (!copy[@"transport"]) copy[@"transport"] = @(FDMTransportAnonymousBackground);
+            if (!copy[@"replayable"]) copy[@"replayable"] = @([copy[@"method"] isEqual:@"POST"] ? NO : YES);
             [snapshot addObject:FDMImmutableRecord(copy)];
         }
     }];
@@ -276,6 +362,7 @@ static const void *FDMEngineQueueKey = &FDMEngineQueueKey;
         NSInteger state = [row[@"state"] integerValue];
         if (state == FDMStateDownloading || [row[@"pausing"] boolValue]) {
             row[@"state"] = @([row[@"pauseIntent"] boolValue] ? FDMStatePaused : FDMStateInterrupted);
+            row[@"schedulerStatus"] = @([row[@"pauseIntent"] boolValue] ? FDMSchedulerUserPaused : FDMSchedulerNeedsContext);
             row[@"pausing"] = @NO;
             row[@"speed"] = @0;
         }
@@ -288,6 +375,8 @@ static const void *FDMEngineQueueKey = &FDMEngineQueueKey;
     [self persist:nil];
     FDMLog(@"engine restore complete bound=%lu", (unsigned long)live.count);
     FDMNotifyRecordsChanged();
+    // Restored rows are already bound or terminal; only now may the queue start new work.
+    [self pumpScheduler];
     [self finishBackgroundIfReady];
 }
 
@@ -313,6 +402,10 @@ static const void *FDMEngineQueueKey = &FDMEngineQueueKey;
 }
 
 - (BOOL)startItem:(NSMutableDictionary *)row resume:(BOOL)resume error:(NSError **)error {
+    return [self startItem:row resume:resume request:nil error:error];
+}
+
+- (BOOL)startItem:(NSMutableDictionary *)row resume:(BOOL)resume request:(NSURLRequest *)request error:(NSError **)error {
     if ([row[@"state"] integerValue] == FDMStateCompleted) {
         if (error) *error = FDMError(@"该下载已完成；再次下载请新建任务");
         return NO;
@@ -326,11 +419,16 @@ static const void *FDMEngineQueueKey = &FDMEngineQueueKey;
     NSData *data = resume ? [self resumeData:row] : nil;
     if (resume && !data.length) { if (error) *error = FDMError(@"没有有效的续传数据，请选择重新下载"); return NO; }
     NSMutableDictionary *previous = [row mutableCopy];
-    NSURLSessionDownloadTask *task = data ? [_session downloadTaskWithResumeData:data] : [_session downloadTaskWithURL:url];
+    if (!data && request && [row[@"transport"] integerValue] == FDMTransportCredentialedSession) {
+        return [self startCredentialedItem:row request:request previous:previous error:error];
+    }
+    NSURLSessionDownloadTask *task = data ? [_session downloadTaskWithResumeData:data] : [_session downloadTaskWithRequest:(request ?: [NSURLRequest requestWithURL:url])];
     row[@"generation"] = @([row[@"generation"] unsignedIntegerValue] + 1);
     task.taskDescription = [self tokenForItem:row];
     row[@"taskIdentifier"] = @(task.taskIdentifier);
     row[@"state"] = @(FDMStateDownloading);
+    row[@"schedulerStatus"] = @(FDMSchedulerRunning);
+    [row removeObjectForKey:@"waitReason"];
     row[@"pausing"] = @NO;
     row[@"pauseIntent"] = @NO;
     row[@"speed"] = @0;
@@ -354,17 +452,366 @@ static const void *FDMEngineQueueKey = &FDMEngineQueueKey;
         return NO;
     }
     [task resume];
-    FDMLog(@"engine start id=%@ attempt=%@ resumed=%d", key, row[@"generation"], (int)resume);
+    FDMLog(@"engine start id=%@ attempt=%@ resumed=%d transport=%@", key, row[@"generation"], (int)resume,
+           FDMTransportName([row[@"transport"] integerValue]));
     return YES;
+}
+
+#pragma mark - credentialed transport
+
+- (BOOL)startCredentialedItem:(NSMutableDictionary *)row request:(NSURLRequest *)request previous:(NSMutableDictionary *)previous error:(NSError **)error {
+    NSString *key = row[@"key"];
+    FDMCredentialedTransport *transport = [[FDMCredentialedTransport alloc] initWithIntent:nil request:request queue:_queue];
+    row[@"generation"] = @([row[@"generation"] unsignedIntegerValue] + 1);
+    row[@"state"] = @(FDMStateDownloading);
+    row[@"schedulerStatus"] = @(FDMSchedulerRunning);
+    [row removeObjectForKey:@"waitReason"];
+    row[@"pausing"] = @NO;
+    row[@"pauseIntent"] = @NO;
+    row[@"speed"] = @0;
+    row[@"usedResume"] = @NO;
+    row[@"received"] = @0;
+    row[@"total"] = @0;
+    [row removeObjectForKey:@"error"];
+    [row removeObjectForKey:@"actionError"];
+    [row removeObjectForKey:@"resumeRelativePath"];
+    [row removeObjectForKey:@"canResume"];
+    _credentialed[key] = transport;
+    if (![self persist:error]) {
+        [_credentialed removeObjectForKey:key];
+        [row removeAllObjects];
+        [row addEntriesFromDictionary:previous];
+        return NO;
+    }
+    __weak typeof(self) weakSelf = self;
+    NSUInteger generation = [row[@"generation"] unsignedIntegerValue];
+    [transport startWithProgress:^(int64_t received, int64_t total) {
+        [weakSelf applyCredentialedProgress:key generation:generation received:received total:total];
+    } completion:^(NSURL *location, NSHTTPURLResponse *response, NSError *failure) {
+        [weakSelf finishCredentialed:key generation:generation location:location response:response error:failure];
+    }];
+    FDMLog(@"engine start id=%@ attempt=%@ transport=%@", key, row[@"generation"], FDMTransportName(FDMTransportCredentialedSession));
+    return YES;
+}
+
+- (void)applyCredentialedProgress:(NSString *)key generation:(NSUInteger)generation received:(int64_t)received total:(int64_t)total {
+    [self sync:^{
+        NSMutableDictionary *row = [self item:key];
+        if (!row || [row[@"generation"] unsignedIntegerValue] != generation) return;
+        if ([row[@"pausing"] boolValue] || [row[@"state"] integerValue] == FDMStateCompleted) return;
+        row[@"received"] = @(MAX(0, received));
+        row[@"total"] = @(MAX(0, total));
+    }];
+}
+
+- (void)finishCredentialed:(NSString *)key generation:(NSUInteger)generation location:(NSURL *)location response:(NSHTTPURLResponse *)response error:(NSError *)failure {
+    [self sync:^{
+        // A late callback from an older attempt must never write the new task's state or file.
+        NSMutableDictionary *row = [self item:key];
+        if (!row || [row[@"generation"] unsignedIntegerValue] != generation) {
+            if (location) [[NSFileManager defaultManager] removeItemAtURL:location error:nil];
+            return;
+        }
+        [self->_credentialed removeObjectForKey:key];
+        if ([self->_deleted containsObject:key]) {
+            if (location) [[NSFileManager defaultManager] removeItemAtURL:location error:nil];
+            return;
+        }
+        if ([row[@"pauseIntent"] boolValue]) {
+            // The credentialed transport has no resumable payload; keep the paused row honest.
+            row[@"state"] = @(FDMStatePaused);
+            row[@"schedulerStatus"] = @(FDMSchedulerUserPaused);
+            row[@"pausing"] = @NO;
+            row[@"speed"] = @0;
+            row[@"waitReason"] = @"此下载不支持断点续传，继续时需要重新发起";
+            if (location) [[NSFileManager defaultManager] removeItemAtURL:location error:nil];
+            [self persist:nil];
+            FDMNotifyRecordsChanged();
+            [self markSlotFreed];
+            [self finishBackgroundIfReady];
+            return;
+        }
+        if (!failure && location && response.statusCode >= 200 && response.statusCode < 300) {
+            [self acceptDownloadedFile:location row:row response:response evidence:@"credentialed-http-file"];
+        } else {
+            row[@"state"] = @(FDMStateFailed);
+            row[@"schedulerStatus"] = @(FDMSchedulerNeedsContext);
+            row[@"error"] = failure.localizedDescription ?: [NSString stringWithFormat:@"HTTP %ld：服务器未提供成功下载响应", (long)response.statusCode];
+            row[@"speed"] = @0;
+            if (location) [[NSFileManager defaultManager] removeItemAtURL:location error:nil];
+            [self commitTerminalRecord:row];
+            [self archive:row];
+        }
+        [self persist:nil];
+        FDMNotifyRecordsChanged();
+        [self markSlotFreed];
+        [self finishBackgroundIfReady];
+    }];
+}
+
+// Takes synchronous ownership of a temporary file and commits completion evidence.
+- (BOOL)acceptDownloadedFile:(NSURL *)location row:(NSMutableDictionary *)row response:(NSURLResponse *)response evidence:(NSString *)evidence {
+    NSString *directory = FDMDirectory([@"FocusDM/downloads" stringByAppendingPathComponent:FDMLegacyHash(row[@"key"])]);
+    NSString *name = FDMSafeFilename(response.suggestedFilename ?: row[@"name"]);
+    NSString *destination = [directory stringByAppendingPathComponent:name];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:destination]) {
+        NSString *base = name.stringByDeletingPathExtension;
+        NSString *suffix = name.pathExtension;
+        NSString *unique = [NSString stringWithFormat:@"%@-%@%@%@", base, NSUUID.UUID.UUIDString, suffix.length ? @"." : @"", suffix];
+        destination = [directory stringByAppendingPathComponent:unique];
+    }
+    NSError *error = nil;
+    if (!FDMRelativeDocumentPath(destination) || [[NSFileManager defaultManager] fileExistsAtPath:destination]) error = FDMError(@"无法创建唯一保存路径；已有文件未覆盖");
+    else if (![[NSFileManager defaultManager] moveItemAtURL:location toURL:[NSURL fileURLWithPath:destination] error:&error]) {}
+    if (error) {
+        row[@"state"] = @(FDMStateFailed);
+        row[@"schedulerStatus"] = @(FDMSchedulerNeedsContext);
+        row[@"error"] = error.localizedDescription;
+        [self commitTerminalRecord:row];
+        [self archive:row];
+        return NO;
+    }
+    NSDictionary *identity = FDMFileIdentity(destination);
+    row[@"state"] = @(FDMStateCompleted);
+    row[@"schedulerStatus"] = @(FDMSchedulerRunning);
+    row[@"pausing"] = @NO;
+    row[@"pauseIntent"] = @NO;
+    [row removeObjectForKey:@"resumeRequested"];
+    row[@"path"] = destination;
+    row[@"relativePath"] = FDMRelativeDocumentPath(destination);
+    if (identity) row[@"fileIdentity"] = identity;
+    row[@"size"] = identity[@"size"] ?: @(row[@"received"]);
+    row[@"received"] = row[@"size"];
+    row[@"completedAt"] = @(NSDate.date.timeIntervalSince1970);
+    row[@"completionEvidence"] = evidence;
+    row[@"speed"] = @0;
+    [row removeObjectForKey:@"error"];
+    [self commitTerminalRecord:row];
+    [self archive:row];
+    return YES;
+}
+
+#pragma mark - WebKit downloads
+
+- (NSString *)registerWebKitDownload:(id)download intent:(id)intent tabID:(NSString *)tabID {
+    if (!download) return nil;
+    __block NSString *key;
+    __block NSError *failure;
+    NSURLRequest *request = FDMValue(download, @"originalRequest");
+    if (![request isKindOfClass:NSURLRequest.class]) request = nil;
+    [self sync:^{
+        if (self->_restoring) { failure = FDMError(@"正在恢复系统下载任务，请稍后操作"); return; }
+        if (!self->_writable) { failure = FDMError(@"下载记录文件不可写；网页下载未接管"); return; }
+        NSUInteger queued = 0;
+        for (NSDictionary *row in self->_items) if ([row[@"schedulerStatus"] integerValue] == FDMSchedulerWaiting) queued++;
+        if (queued >= FDMQueueLimit) { failure = FDMError(@"下载任务过多，请先处理现有任务"); return; }
+        key = NSUUID.UUID.UUIDString;
+        FDMDownloadIntent *downloadIntent = [intent isKindOfClass:FDMDownloadIntent.class] ? intent : nil;
+        NSString *name = downloadIntent.suggestedFilename;
+        if (!name.length) name = request.URL.lastPathComponent;
+        NSMutableDictionary *row = [@{@"schema": @2, @"key": key,
+            @"url": request.URL.absoluteString ?: @"",
+            @"name": FDMSafeFilename(name), @"generation": @0,
+            // A WebKit download is in flight the moment it is adopted: it is not a queued GET.
+            @"state": @(FDMStateDownloading), @"schedulerStatus": @(FDMSchedulerRunning),
+            @"transport": @(FDMTransportWebKitDownload), @"replayable": @NO,
+            @"method": request.HTTPMethod.uppercaseString ?: @"GET",
+            @"source": @0, @"received": @0, @"total": @0, @"speed": @0,
+            @"time": @(NSDate.date.timeIntervalSince1970)} mutableCopy];
+        if (downloadIntent) {
+            row[@"intentID"] = downloadIntent.intentID;
+            if (downloadIntent.sourceOrigin) row[@"sourceOrigin"] = downloadIntent.sourceOrigin;
+            if (downloadIntent.targetOrigin) row[@"targetOrigin"] = downloadIntent.targetOrigin;
+        }
+        [self->_items insertObject:row atIndex:0];
+        if (![self persist:&failure]) {
+            [self->_items removeObject:row];
+            key = nil;
+        }
+    }];
+    if (failure) FDMLog(@"webkit adoption refused: %@", failure.localizedDescription);
+    if (key) FDMNotifyRecordsChanged();
+    return key;
+}
+
+- (NSString *)destinationForWebKitDownloadKey:(NSString *)key suggestedFilename:(NSString *)filename response:(NSURLResponse *)response {
+    if (!key.length) return nil;
+    __block NSString *destination;
+    [self sync:^{
+        NSMutableDictionary *row = [self item:key];
+        if (!row || [self->_deleted containsObject:key]) return;
+        NSString *name = FDMSafeFilename(filename.length ? filename : (response.suggestedFilename ?: row[@"name"]));
+        NSString *directory = FDMDirectory([@"FocusDM/downloads" stringByAppendingPathComponent:FDMLegacyHash(key)]);
+        NSString *candidate = [directory stringByAppendingPathComponent:name];
+        // WebKit requires a path that does not exist yet; a second attempt gets its own unique name.
+        if ([[NSFileManager defaultManager] fileExistsAtPath:candidate]) {
+            NSString *base = name.stringByDeletingPathExtension;
+            NSString *suffix = name.pathExtension;
+            candidate = [directory stringByAppendingPathComponent:
+                [NSString stringWithFormat:@"%@-%@%@%@", base, NSUUID.UUID.UUIDString, suffix.length ? @"." : @"", suffix]];
+        }
+        if (!FDMRelativeDocumentPath(candidate) || [[NSFileManager defaultManager] fileExistsAtPath:candidate]) return;
+        row[@"path"] = candidate;
+        row[@"relativePath"] = FDMRelativeDocumentPath(candidate);
+        [self persist:nil];
+        destination = candidate;
+    }];
+    return destination;
+}
+
+- (void)applyWebKitProgressKey:(NSString *)key received:(long long)received total:(long long)total {
+    if (!key.length) return;
+    [self sync:^{
+        NSMutableDictionary *row = [self item:key];
+        if (!row || [row[@"state"] integerValue] == FDMStateCompleted) return;
+        row[@"received"] = @(MAX(0, received));
+        row[@"total"] = @(MAX(0, total));
+    }];
+}
+
+- (void)webKitDownloadDidFinishKey:(NSString *)key {
+    if (!key.length) return;
+    __block BOOL unconfirmed = NO;
+    [self sync:^{
+        NSMutableDictionary *row = [self item:key];
+        if (!row || [self->_deleted containsObject:key]) return;
+        // Completion needs an actual regular file with a confirmed identity, not just a callback.
+        NSString *path = FDMResolveDocumentPath(row);
+        NSDictionary *identity = path.length ? FDMFileIdentity(path) : nil;
+        if (!identity) { unconfirmed = YES; return; }
+        row[@"state"] = @(FDMStateCompleted);
+        row[@"pausing"] = @NO;
+        row[@"pauseIntent"] = @NO;
+        row[@"fileIdentity"] = identity;
+        row[@"size"] = identity[@"size"];
+        row[@"received"] = identity[@"size"];
+        row[@"completedAt"] = @(NSDate.date.timeIntervalSince1970);
+        row[@"completionEvidence"] = @"webkit-finish-and-file-confirmed";
+        row[@"speed"] = @0;
+        [row removeObjectForKey:@"error"];
+        [self commitTerminalRecord:row];
+        [self archive:row];
+        [self persist:nil];
+        FDMNotifyRecordsChanged();
+        [self finishBackgroundIfReady];
+    }];
+    if (unconfirmed) [self webKitDownloadKey:key failedWithMessage:@"网页下载已结束，但保存的文件无法确认" deleted:NO];
+}
+
+- (void)webKitDownloadKey:(NSString *)key failedWithMessage:(NSString *)message deleted:(BOOL)deleted {
+    if (!key.length) return;
+    [self sync:^{
+        NSMutableDictionary *row = [self item:key];
+        if (!row || [self->_deleted containsObject:key]) return;
+        if ([row[@"state"] integerValue] == FDMStateCompleted) return;
+        row[@"state"] = @(FDMStateFailed);
+        // No anonymous retry: the request context only existed inside WebKit.
+        row[@"schedulerStatus"] = @(FDMSchedulerNeedsContext);
+        row[@"error"] = message.length ? message : @"网页下载失败";
+        row[@"speed"] = @0;
+        [self commitTerminalRecord:row];
+        [self archive:row];
+        [self persist:nil];
+        FDMNotifyRecordsChanged();
+        [self finishBackgroundIfReady];
+    }];
+    (void)deleted;
+}
+
+#pragma mark - intent entry points
+
+- (NSString *)enqueueURL:(NSString *)url name:(NSString *)name error:(NSError **)error {
+    NSError *invalid = nil;
+    NSURL *address = FDMValidatedURL(url, &invalid);
+    if (!address) { if (error) *error = invalid; return nil; }
+    __block NSString *key;
+    __block NSError *failure;
+    [self sync:^{
+        if (self->_restoring) { failure = FDMError(@"正在恢复系统下载任务，请稍后操作"); return; }
+        NSUInteger queued = 0;
+        for (NSDictionary *row in self->_items) if ([row[@"schedulerStatus"] integerValue] == FDMSchedulerWaiting) queued++;
+        if (queued >= FDMQueueLimit) { failure = FDMError(@"等待队列已满，请先处理现有任务"); return; }
+        key = NSUUID.UUID.UUIDString;
+        NSMutableDictionary *row = [@{@"schema": @2, @"key": key, @"url": address.absoluteString,
+            @"name": FDMSafeFilename(name.length ? name : address.lastPathComponent), @"generation": @0,
+            @"state": @(FDMStatePaused), @"schedulerStatus": @(FDMSchedulerWaiting),
+            @"transport": @(FDMTransportAnonymousBackground), @"replayable": @YES,
+            @"source": @0, @"received": @0, @"total": @0, @"speed": @0,
+            @"time": @(NSDate.date.timeIntervalSince1970)} mutableCopy];
+        [self->_items insertObject:row atIndex:0];
+        self->_requests[key] = [NSURLRequest requestWithURL:address];
+        // Persist the waiting row before any transport exists, so a crash cannot lose the queue slot.
+        if (![self persist:&failure]) {
+            [self->_items removeObject:row];
+            [self->_requests removeObjectForKey:key];
+            key = nil;
+            return;
+        }
+        [self pumpScheduler];
+    }];
+    if (failure && error) *error = failure;
+    if (key) FDMNotifyRecordsChanged();
+    return key;
+}
+
+- (NSString *)startIntent:(id)intent request:(NSURLRequest *)request error:(NSError **)error {
+    FDMDownloadIntent *downloadIntent = intent;
+    if (!downloadIntent || !request) { if (error) *error = FDMError(@"下载意图无效，请重新发起下载"); return nil; }
+    __block NSString *key;
+    __block NSError *failure;
+    [self sync:^{
+        if (self->_restoring) { failure = FDMError(@"正在恢复系统下载任务，请稍后操作"); return; }
+        if (downloadIntent.transport == FDMTransportWebKitDownload) {
+            failure = FDMError(@"该下载依赖原浏览器请求，不能改为重新请求；请使用页面内的下载入口");
+            return;
+        }
+        key = NSUUID.UUID.UUIDString;
+        NSMutableDictionary *row = [@{@"schema": @2, @"key": key, @"url": downloadIntent.url,
+            @"name": FDMSafeFilename(downloadIntent.suggestedFilename ?: request.URL.lastPathComponent),
+            @"generation": @0, @"state": @(FDMStatePaused),
+            @"schedulerStatus": @(FDMSchedulerWaiting),
+            @"transport": @(downloadIntent.transport), @"replayable": @(downloadIntent.replayable),
+            @"intentID": downloadIntent.intentID, @"method": downloadIntent.method ?: @"GET",
+            @"sourceOrigin": downloadIntent.sourceOrigin ?: @"", @"targetOrigin": downloadIntent.targetOrigin ?: @"",
+            @"source": @0, @"received": @0, @"total": @0, @"speed": @0,
+            @"time": @(NSDate.date.timeIntervalSince1970)} mutableCopy];
+        [self->_items insertObject:row atIndex:0];
+        self->_requests[key] = request;
+        if (![self persist:&failure]) {
+            [self->_items removeObject:row];
+            [self->_requests removeObjectForKey:key];
+            key = nil;
+            return;
+        }
+        [self pumpScheduler];
+    }];
+    if (failure && error) *error = failure;
+    if (key) FDMNotifyRecordsChanged();
+    return key;
 }
 
 - (void)beginPause:(NSString *)key {
     NSMutableDictionary *row = [self item:key];
     key = row[@"key"] ?: key;
+    // A WebKit download has no resumeData the app may persist, so pausing it means cancelling the
+    // WebKit object and keeping an honest "paused, needs re-issue" row.
+    if ([row[@"transport"] integerValue] == FDMTransportWebKitDownload) {
+        if (!row || [row[@"state"] integerValue] == FDMStateCompleted || [row[@"pausing"] boolValue]) return;
+        row[@"pauseIntent"] = @YES;
+        row[@"pausing"] = @NO;
+        row[@"state"] = @(FDMStatePaused);
+        row[@"schedulerStatus"] = @(FDMSchedulerUserPaused);
+        row[@"speed"] = @0;
+        row[@"waitReason"] = @"网页原请求下载不支持断点续传；继续时需要重新发起";
+        [self persist:nil];
+        [FDMWebKitDownloads.shared cancelKey:key];
+        FDMNotifyRecordsChanged();
+        return;
+    }
     NSURLSessionDownloadTask *task = _tasks[key];
     if (!row || [row[@"state"] integerValue] == FDMStateCompleted || [row[@"pausing"] boolValue]) return;
     row[@"pauseIntent"] = @YES;
-    if (!task) { row[@"state"] = @(FDMStatePaused); [self persist:nil]; FDMNotifyRecordsChanged(); return; }
+    if (!task) { row[@"state"] = @(FDMStatePaused); row[@"schedulerStatus"] = @(FDMSchedulerUserPaused); [self persist:nil]; FDMNotifyRecordsChanged(); return; }
     NSString *token = task.taskDescription;
     row[@"pausing"] = @YES;
     _pauses[token] = [@{@"key": key, @"taskIdentifier": @(task.taskIdentifier), @"cancelSeen": @NO, @"completeSeen": @NO} mutableCopy];
@@ -596,9 +1043,13 @@ static const void *FDMEngineQueueKey = &FDMEngineQueueKey;
         NSError *error = nil;
         if (!FDMRelativeDocumentPath(destination) || [[NSFileManager defaultManager] fileExistsAtPath:destination]) error = FDMError(@"无法创建唯一保存路径；已有文件未覆盖");
         else if (![[NSFileManager defaultManager] moveItemAtURL:location toURL:[NSURL fileURLWithPath:destination] error:&error]) {}
-        if (error) { row[@"state"] = @(FDMStateFailed); row[@"error"] = error.localizedDescription; }
-        else {
+        if (error) {
+            row[@"state"] = @(FDMStateFailed);
+            row[@"schedulerStatus"] = @(FDMSchedulerNeedsContext);
+            row[@"error"] = error.localizedDescription;
+        } else {
             row[@"state"] = @(FDMStateCompleted);
+            row[@"schedulerStatus"] = @(FDMSchedulerRunning);
             row[@"pausing"] = @NO;
             row[@"pauseIntent"] = @NO;
             [row removeObjectForKey:@"resumeRequested"];
@@ -644,10 +1095,12 @@ static const void *FDMEngineQueueKey = &FDMEngineQueueKey;
             NSData *data = error.userInfo[NSURLSessionDownloadTaskResumeData];
             if ([data isKindOfClass:NSData.class] && data.length) [self saveResume:data item:row];
             row[@"state"] = @(FDMStatePaused);
+            row[@"schedulerStatus"] = @(FDMSchedulerUserPaused);
             row[@"pausing"] = @NO;
             row[@"speed"] = @0;
             [self persist:nil];
             FDMNotifyRecordsChanged();
+            [self markSlotFreed];
             [self finishBackgroundIfReady];
             return;
         }
@@ -659,11 +1112,14 @@ static const void *FDMEngineQueueKey = &FDMEngineQueueKey;
                 row[@"error"] = [NSString stringWithFormat:@"续传未完成：%@；没有新的续传数据，请重新下载", error.localizedDescription ?: @"系统下载失败"];
             } else if (!row[@"error"]) row[@"error"] = error.localizedDescription ?: @"下载未完成文件保存，请重试";
             row[@"state"] = @([self resumeData:row].length ? FDMStateInterrupted : FDMStateFailed);
+            row[@"schedulerStatus"] = @(FDMSchedulerNeedsContext);
             row[@"speed"] = @0;
         }
         if ([row[@"state"] integerValue] == FDMStateCompleted || [row[@"state"] integerValue] == FDMStateFailed) [self archive:row];
         [self persist:nil];
         FDMNotifyRecordsChanged();
+        // The attempt converged here, so the concurrency slot is genuinely free.
+        [self markSlotFreed];
         [self finishBackgroundIfReady];
     }];
 }

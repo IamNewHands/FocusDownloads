@@ -21,6 +21,49 @@ __attribute__((used)) const char FDMBuildMetadata[] =
 
 NSString *const FDMRecordsDidChangeNotification = @"FDMRecordsDidChange";
 NSString *const FDMBackgroundSessionIdentifier = @"FocusDM.resumable";
+NSUInteger const FDMQueueLimit = 500;
+NSUInteger const FDMBatchPreviewLimit = 100;
+
+NSString *FDMTransportName(FDMTransportKind kind) {
+    switch (kind) {
+        case FDMTransportAnonymousBackground: return @"anonymousBackground";
+        case FDMTransportCredentialedSession: return @"credentialedSession";
+        case FDMTransportWebKitDownload: return @"webKitDownload";
+    }
+    return @"unknown";
+}
+
+NSString *FDMSchedulerStatusName(FDMSchedulerStatus status) {
+    switch (status) {
+        case FDMSchedulerWaiting: return @"等待中";
+        case FDMSchedulerRunning: return @"进行中";
+        case FDMSchedulerUserPaused: return @"已暂停";
+        case FDMSchedulerNeedsContext: return @"需要重新发起";
+    }
+    return @"未知";
+}
+
+static NSSet<NSString *> *FDMSecretHeaderNameSet(void) {
+    static NSSet *names;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        names = [NSSet setWithArray:@[@"authorization", @"proxy-authorization", @"cookie", @"cookie2",
+                                      @"set-cookie", @"x-api-key", @"x-auth-token", @"x-csrf-token",
+                                      @"x-xsrf-token", @"authentication", @"www-authenticate"]];
+    });
+    return names;
+}
+
+BOOL FDMIsSecretHeader(NSString *name) {
+    return [name isKindOfClass:NSString.class] && [FDMSecretHeaderNameSet() containsObject:name.lowercaseString];
+}
+
+NSString *FDMRedactedHeaderNames(NSDictionary<NSString *, NSString *> *headers) {
+    NSMutableArray *names = [NSMutableArray array];
+    for (NSString *name in headers) [names addObject:FDMIsSecretHeader(name) ? [name stringByAppendingString:@"=<redacted>"] : name];
+    return [[names sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@","];
+}
+
 static char FDMLogPath[1024];
 static NSUncaughtExceptionHandler *FDMPreviousExceptionHandler;
 
@@ -194,12 +237,19 @@ BOOL FDMValidStoredRecord(id value) {
     if (![value isKindOfClass:NSDictionary.class]) return NO;
     NSDictionary *row = value;
     if (!FDMString(row[@"key"]).length) return NO;
-    NSArray *strings = @[@"url", @"name", @"path", @"relativePath", @"legacyKey", @"error", @"actionError", @"completionEvidence", @"resumeRelativePath", @"legacyResumeRelativePath"];
+    NSArray *strings = @[@"url", @"name", @"path", @"relativePath", @"legacyKey", @"error", @"actionError",
+                         @"completionEvidence", @"resumeRelativePath", @"legacyResumeRelativePath",
+                         @"waitReason", @"statusDetail", @"method", @"intentID", @"sourceOrigin", @"targetOrigin"];
     for (NSString *key in strings) if (row[key] && ![row[key] isKindOfClass:NSString.class]) return NO;
-    NSArray *numbers = @[@"schema", @"state", @"generation", @"taskIdentifier", @"received", @"total", @"size", @"speed", @"progress", @"time", @"completedAt", @"source", @"hostStatus", @"pausing", @"pauseIntent", @"resumeRequested", @"resumeRejected", @"usedResume", @"canResume"];
+    NSArray *numbers = @[@"schema", @"state", @"generation", @"taskIdentifier", @"received", @"total", @"size",
+                         @"speed", @"progress", @"time", @"completedAt", @"source", @"hostStatus", @"pausing",
+                         @"pauseIntent", @"resumeRequested", @"resumeRejected", @"usedResume", @"canResume",
+                         @"schedulerStatus", @"transport", @"replayable"];
     for (NSString *key in numbers) if (row[key] && ![row[key] isKindOfClass:NSNumber.class]) return NO;
     if (!row[@"state"] || [row[@"state"] integerValue] < FDMStateDownloading || [row[@"state"] integerValue] > FDMStateInterrupted) return NO;
     if (row[@"fileIdentity"] && ![row[@"fileIdentity"] isKindOfClass:NSDictionary.class]) return NO;
+    if (row[@"schedulerStatus"] && ([row[@"schedulerStatus"] integerValue] < FDMSchedulerWaiting || [row[@"schedulerStatus"] integerValue] > FDMSchedulerNeedsContext)) return NO;
+    if (row[@"transport"] && ([row[@"transport"] integerValue] < FDMTransportAnonymousBackground || [row[@"transport"] integerValue] > FDMTransportWebKitDownload)) return NO;
     return YES;
 }
 
