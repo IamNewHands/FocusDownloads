@@ -164,6 +164,12 @@ class DownloadIntentTests(unittest.TestCase):
     def test_webkit_pause_does_not_pretend_to_resume(self):
         self.assertIn("网页原请求下载不支持断点续传", self.engine)
 
+    def test_engine_does_not_link_webkit(self):
+        # The Foundation regression links Foundation only, so the engine must not reference the
+        # WebKit owner class directly; it resolves it at runtime instead.
+        self.assertNotIn('#import "FDMWebKitDownloads.h"', self.engine)
+        self.assertIn('NSClassFromString(@"FDMWebKitDownloads")', self.engine)
+
 
 class HostWiringTests(unittest.TestCase):
     def setUp(self):

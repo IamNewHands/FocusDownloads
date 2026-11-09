@@ -1,7 +1,18 @@
 #import "FDMEngine.h"
 #import "FDMStore.h"
 #import "FDMIntent.h"
-#import "FDMWebKitDownloads.h"
+
+// The WebKit transport lives in its own owner and links WebKit. The engine must stay Foundation-only
+// so the regression build (and any Foundation-only host) does not pull WebKit in; the cancel call is
+// therefore resolved at runtime and is a no-op when the WebKit owner is absent.
+static void FDMEngineCancelWebKitDownload(NSString *key) {
+    Class webKitOwner = NSClassFromString(@"FDMWebKitDownloads");
+    SEL shared = NSSelectorFromString(@"shared");
+    SEL cancel = NSSelectorFromString(@"cancelKey:");
+    if (!webKitOwner || ![webKitOwner respondsToSelector:shared]) return;
+    id owner = ((id (*)(id, SEL))objc_msgSend)((id)webKitOwner, shared);
+    if (owner && [owner respondsToSelector:cancel]) ((void (*)(id, SEL, id))objc_msgSend)(owner, cancel, key);
+}
 
 static const void *FDMEngineQueueKey = &FDMEngineQueueKey;
 
@@ -804,7 +815,7 @@ static const void *FDMEngineQueueKey = &FDMEngineQueueKey;
         row[@"speed"] = @0;
         row[@"waitReason"] = @"网页原请求下载不支持断点续传；继续时需要重新发起";
         [self persist:nil];
-        [FDMWebKitDownloads.shared cancelKey:key];
+        FDMEngineCancelWebKitDownload(key);
         FDMNotifyRecordsChanged();
         return;
     }
