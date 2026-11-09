@@ -9,7 +9,7 @@
 #import <stdarg.h>
 
 #ifndef FDM_PATCH_VERSION
-#define FDM_PATCH_VERSION "v19"
+#define FDM_PATCH_VERSION "v20"
 #endif
 #ifndef FDM_BUILD_REVISION
 #define FDM_BUILD_REVISION "local-uncompiled"
@@ -118,7 +118,8 @@ NSURL *FDMValidatedURL(NSString *text, NSError **error) {
 NSString *FDMSafeFilename(NSString *name) {
     NSString *component = [[(name ?: @"download") stringByReplacingOccurrencesOfString:@"\\" withString:@"/"] lastPathComponent];
     component = [component stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    NSCharacterSet *bad = [NSCharacterSet characterSetWithCharactersInString:@"/:\0\r\n"];
+    NSMutableCharacterSet *bad = [NSCharacterSet.controlCharacterSet mutableCopy];
+    [bad addCharactersInString:@"/:"];
     component = [[component componentsSeparatedByCharactersInSet:bad] componentsJoinedByString:@"_"];
     if (!component.length || [component isEqual:@"."] || [component isEqual:@".."]) component = @"download";
     if (component.length > 160) component = [component substringWithRange:[component rangeOfComposedCharacterSequencesForRange:NSMakeRange(0, 160)]];
@@ -313,7 +314,7 @@ static void FDMExceptionHandler(NSException *exception) {
 }
 
 void FDMInstallCrashHandlers(void) {
-    NSString *path = [FDMDirectory(@"FocusDM") stringByAppendingPathComponent:@"diagnostics-v19.log"];
+    NSString *path = [FDMDirectory(@"FocusDM") stringByAppendingPathComponent:[NSString stringWithFormat:@"diagnostics-%@.log", FDMPatchVersion()]];
     snprintf(FDMLogPath, sizeof(FDMLogPath), "%s", path.fileSystemRepresentation);
     FDMPreviousExceptionHandler = NSGetUncaughtExceptionHandler();
     if (FDMPreviousExceptionHandler != FDMExceptionHandler) NSSetUncaughtExceptionHandler(FDMExceptionHandler);

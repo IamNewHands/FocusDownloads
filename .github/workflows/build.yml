@@ -18,23 +18,44 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
 
       - name: Foundation native regression
+        id: foundation
+        continue-on-error: true
         run: |
           set -euo pipefail
           mkdir -p build
           xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra \
             -DFDM_TESTING=1 -Isrc \
-            -framework Foundation \
+            -framework Foundation -framework Security \
             src/FDMCommon.m src/FDMStore.m src/FDMJSON.m src/FDMPolicy.m \
-            src/FDMIntent.m src/FDMBackup.m src/FDMEngine.m src/FDMHostDownloads.m \
+            src/FDMIntent.m src/FDMVault.m src/FDMBackup.m src/FDMEngine.m src/FDMHostDownloads.m \
             tests/native_main.m tests/engine_regression.m tests/host_regression.m \
             tests/owner_edge_regression.m tests/malformed_regression.m tests/contract_regression.m \
             -o build/foundation-regression
           build/foundation-regression
 
+      - name: Backup native SQLite regression
+        id: backup
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra \
+            -DFDM_TESTING=1 -DFDM_BACKUP_REGRESSION_MAIN=1 -Isrc \
+            -framework Foundation -lsqlite3 \
+            src/FDMCommon.m src/FDMJSON.m src/FDMPolicy.m src/FDMBackup.m src/FDMBackupSQL.m \
+            src/FDMBackupRepositoryBookmarks.m src/FDMBackupRepositorySearch.m \
+            src/FDMBackupRepositoryPreferences.m src/FDMBackupRepositoryScripts.m \
+            src/FDMBackupRepositoryPolicy.m src/FDMBackupCoordinator.m \
+            tests/backup_regression.m -o build/backup-regression
+          build/backup-regression
+
       - name: UIKit icon regression in simulator
+        id: uikit
+        continue-on-error: true
         run: python3 tests/run_icons_simulator.py
 
       - name: Build all arm64 modules
+        id: arm64
+        continue-on-error: true
         run: |
           set -euo pipefail
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
@@ -46,10 +67,18 @@ jobs:
             -dynamiclib \
             -install_name @executable_path/Frameworks/FocusDM.dylib \
             -framework UIKit -framework Foundation -framework QuartzCore -framework CoreGraphics \
-            -framework ImageIO -framework QuickLook -framework WebKit \
+            -framework ImageIO -framework QuickLook -framework WebKit -framework Security \
             -o build/FocusDM.dylib src/*.m
           lipo -info build/FocusDM.dylib
           shasum -a 256 build/FocusDM.dylib
+
+      - name: Require every native verification target
+        if: always()
+        run: |
+          test '${{ steps.foundation.outcome }}' = success
+          test '${{ steps.backup.outcome }}' = success
+          test '${{ steps.uikit.outcome }}' = success
+          test '${{ steps.arm64.outcome }}' = success
 
       - name: Verify compiled provenance
         run: |

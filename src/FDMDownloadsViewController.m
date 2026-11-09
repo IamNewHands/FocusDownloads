@@ -11,8 +11,8 @@ static NSString *FDMRowStateText(NSDictionary *row) {
         return @"暂停中";
     }
     NSInteger scheduler = [row[@"schedulerStatus"] integerValue];
-    if (scheduler == FDMSchedulerWaiting) return @"等待中";
-    if (scheduler == FDMSchedulerNeedsContext) return [row[@"state"] integerValue] == FDMStateCompleted ? @"已完成" : @"需要重新发起";
+    if (row[@"schedulerStatus"] && scheduler == FDMSchedulerWaiting) return @"等待中";
+    if (row[@"schedulerStatus"] && scheduler == FDMSchedulerNeedsContext && [row[@"state"] integerValue] == FDMStateInterrupted) return @"已中断";
     switch ([row[@"state"] integerValue]) {
         case FDMStateDownloading: return [row[@"hostStatus"] isEqual:@0] ? @"等待连接" : @"下载中";
         case FDMStatePaused: return @"已暂停";
@@ -49,7 +49,7 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     if (error.length) [parts addObject:error];
     else if (FDMString(row[@"statusDetail"]).length) [parts addObject:row[@"statusDetail"]];
     else if (FDMString(row[@"waitReason"]).length) [parts addObject:row[@"waitReason"]];
-    else if (state == FDMStatePaused || state == FDMStateInterrupted) [parts addObject:[row[@"canResume"] boolValue] ? @"可断点继续" : @"没有有效续传数据；需要重新下载"];
+    else if (state == FDMStatePaused || state == FDMStateInterrupted) [parts addObject:[row[@"canResume"] boolValue] ? @"可尝试断点继续" : @"原上下文或续传数据不可用，请重新发起"];
     NSString *source = FDMString(row[@"sourceOrigin"]);
     if (source.length && ![source isEqual:FDMString(row[@"targetOrigin"])]) [parts addObject:[@"来源 " stringByAppendingString:source]];
     [parts addObject:FDMRowTransportText(row)];
@@ -181,9 +181,25 @@ static NSString *FDMRowDetail(NSDictionary *row) {
         _error.text = [NSString stringWithFormat:@"一次最多加入 %lu 个地址，当前 %lu 个", (unsigned long)FDMBatchPreviewLimit, (unsigned long)lines.count];
         return;
     }
+    if (_batch) {
+        for (NSString *url in lines) if (!FDMValidatedURL(url, &error)) { _error.text = error.localizedDescription; return; }
+        UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"批量下载预览"
+            message:[NSString stringWithFormat:@"共%lu个直链，将加入等待队列；可重放GET并发上限为%lu。", (unsigned long)lines.count, (unsigned long)FDMEngine.shared.concurrencyLimit]
+            preferredStyle:UIAlertControllerStyleAlert];
+        [confirm addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+        [confirm addAction:[UIAlertAction actionWithTitle:@"开始下载" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            [self commitLines:lines batch:YES];
+        }]];
+        [self presentViewController:confirm animated:YES completion:nil]; return;
+    }
+    [self commitLines:lines batch:NO];
+}
+- (void)commitLines:(NSArray<NSString *> *)lines batch:(BOOL)batch {
+    if (_submitted) return;
+    NSError *error = nil;
     _submitted = YES;
     self.navigationItem.rightBarButtonItem.enabled = NO;
-    if (_batch) {
+    if (batch) {
         NSUInteger queued = self.submitBatch(lines, &error);
         if (queued > 0) { [self dismissViewControllerAnimated:YES completion:nil]; return; }
     } else if (self.submitURL && self.submitURL(lines.firstObject, &error)) {
@@ -368,8 +384,8 @@ static NSString *FDMRowDetail(NSDictionary *row) {
         NSInteger scheduler = [row[@"schedulerStatus"] integerValue];
         switch (_filter) {
             case 1: if (state != FDMStateDownloading) return NO; break;
-            case 2: if (scheduler != FDMSchedulerWaiting) return NO; break;
-            case 3: if (state != FDMStatePaused) return NO; break;
+            case 2: if (!row[@"schedulerStatus"] || scheduler != FDMSchedulerWaiting) return NO; break;
+            case 3: if (state != FDMStatePaused || (row[@"schedulerStatus"] && scheduler == FDMSchedulerWaiting)) return NO; break;
             case 4: if (state != FDMStateCompleted) return NO; break;
             case 5: if (state != FDMStateFailed && state != FDMStateInterrupted) return NO; break;
             default: break;
@@ -417,8 +433,14 @@ static NSString *FDMRowDetail(NSDictionary *row) {
         else if (![FDMHostDownloads.shared pauseKey:key error:&error]) [self showError:error];
     } else if ([action isEqual:@"resume"]) [FDMEngine.shared resumeKey:key];
     else if ([action isEqual:@"restart"]) {
-        if ([adapter isEqual:@"engine"] && [row[@"state"] integerValue] != FDMStateCompleted && [row[@"transport"] integerValue] != FDMTransportWebKitDownload) [FDMEngine.shared restartKey:key];
+        if ([adapter isEqual:@"engine"] && [row[@"transport"] integerValue] == FDMTransportWebKitDownload) {
+            [self showError:FDMError(@"网页原请求不能重放，请返回来源网页重新发起下载")]; return;
+        }
+        if ([adapter isEqual:@"engine"] && [row[@"state"] integerValue] != FDMStateCompleted) [FDMEngine.shared restartKey:key];
         else {
+            if ([row[@"publicSchema"] boolValue]) {
+                [self showError:FDMError(@"历史中不保存登录或签名地址。请使用＋重新输入直链，或返回来源网页下载")]; return;
+            }
             NSString *newKey = [FDMEngine.shared startURL:FDMString(row[@"url"]) ?: key name:FDMString(row[@"name"]) error:&error];
             if (!newKey.length) { [self showError:error]; return; }
             if ([row[@"state"] integerValue] != FDMStateCompleted) {
@@ -428,6 +450,11 @@ static NSString *FDMRowDetail(NSDictionary *row) {
         }
     }
     [self refresh];
+}
+- (BOOL)canRestart:(NSDictionary *)row {
+    return [row[@"state"] integerValue] != FDMStateDownloading &&
+        !([row[@"publicSchema"] boolValue] && [row[@"state"] integerValue] == FDMStateCompleted) &&
+        [row[@"transport"] integerValue] != FDMTransportWebKitDownload;
 }
 - (void)toggleAll {
     if (FDMEngine.shared.restoring) return;
@@ -448,14 +475,9 @@ static NSString *FDMRowDetail(NSDictionary *row) {
         return key.length > 0;
     };
     form.submitBatch = ^NSUInteger(NSArray<NSString *> *urls, NSError **error) {
-        NSUInteger queued = 0;
-        for (NSString *url in urls) {
-            NSError *failure = nil;
-            if ([FDMEngine.shared enqueueURL:url name:nil error:&failure].length) queued++;
-            else if (error) *error = failure;
-        }
+        BOOL committed = [FDMEngine.shared enqueueURLs:urls error:error];
         [weakSelf refresh];
-        return queued;
+        return committed ? urls.count : 0;
     };
     UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:form];
     [self presentController:navigation];
@@ -552,6 +574,17 @@ static NSString *FDMRowDetail(NSDictionary *row) {
 
 - (void)showMore {
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"下载管理" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"GET并发上限" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        UIAlertController *choices = [UIAlertController alertControllerWithTitle:@"可重放GET并发" message:@"网页原导航下载已在途中，不受这个等待队列上限控制。" preferredStyle:UIAlertControllerStyleActionSheet];
+        for (NSUInteger count = 1; count <= 6; count++) {
+            [choices addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%lu个%@", (unsigned long)count,
+                count == FDMEngine.shared.concurrencyLimit ? @"（当前）" : @""] style:UIAlertActionStyleDefault handler:^(UIAlertAction *choice) {
+                FDMEngine.shared.concurrencyLimit = count;
+            }]];
+        }
+        [choices addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+        [self anchorSheet:choices path:nil]; [self presentController:choices];
+    }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"保存位置与使用说明" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
         NSString *text = @"自建下载保存在“文件 → 我的 iPhone → Focus → FocusDM → downloads”。宿主下载请看每条记录的保存路径。\n\n已完成记录可点开预览或分享，使用系统分享菜单存储到其他位置。宿主下载不支持断点续传，本页会明确显示重新下载。";
         UIAlertController *help = [UIAlertController alertControllerWithTitle:@"保存位置" message:text preferredStyle:UIAlertControllerStyleAlert];
@@ -595,7 +628,7 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     if (!FDMEngine.shared.restoring && ![row[@"pausing"] boolValue]) {
         if ([self canPause:row]) [sheet addAction:[UIAlertAction actionWithTitle:@"暂停" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { [self performAction:@"pause" row:row]; }]];
         else if ([self canResume:row]) [sheet addAction:[UIAlertAction actionWithTitle:@"断点继续" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { [self performAction:@"resume" row:row]; }]];
-        else if ([row[@"state"] integerValue] != FDMStateDownloading) [sheet addAction:[UIAlertAction actionWithTitle:[row[@"state"] integerValue] == FDMStateCompleted ? @"再次下载（保留原记录）" : @"重新下载" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { [self performAction:@"restart" row:row]; }]];
+        else if ([self canRestart:row]) [sheet addAction:[UIAlertAction actionWithTitle:[row[@"state"] integerValue] == FDMStateCompleted ? @"再次下载（保留原记录）" : @"重新下载" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) { [self performAction:@"restart" row:row]; }]];
         [sheet addAction:[UIAlertAction actionWithTitle:@"删除…" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) { [self confirmDelete:row path:path]; }]];
     }
     [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
@@ -606,7 +639,7 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     NSDictionary *row = [self rowAt:path];
     if (!row || FDMEngine.shared.restoring || [row[@"pausing"] boolValue]) return nil;
     NSMutableArray *actions = [NSMutableArray array];
-    NSString *action = [self canPause:row] ? @"pause" : ([self canResume:row] ? @"resume" : ([row[@"state"] integerValue] != FDMStateDownloading && [row[@"state"] integerValue] != FDMStateCompleted ? @"restart" : nil));
+    NSString *action = [self canPause:row] ? @"pause" : ([self canResume:row] ? @"resume" : ([self canRestart:row] && [row[@"state"] integerValue] != FDMStateCompleted ? @"restart" : nil));
     if (action) {
         NSString *title = [action isEqual:@"pause"] ? @"暂停" : ([action isEqual:@"resume"] ? @"继续" : @"重下");
         [actions addObject:[UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal title:title handler:^(UIContextualAction *item, UIView *view, void (^done)(BOOL)) { [self performAction:action row:row]; done(YES); }]];

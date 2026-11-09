@@ -2,6 +2,7 @@
 #import "FDMPolicy.h"
 #import "FDMBackup.h"
 #import "FDMCommon.h"
+#import "FDMNavigation.h"
 #import <math.h>
 #import <objc/message.h>
 
@@ -244,8 +245,8 @@ static NSArray<NSString *> *FDMPolicyOptionsForField(NSString *field) {
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:FDMPolicyFieldTitle(field) message:nil preferredStyle:UIAlertControllerStyleActionSheet];
     for (NSString *option in options) {
         BOOL selected = [option isEqual:FDMPolicyInherit] ? _draft[field] == nil : [_draft[field] isEqual:option];
-        NSString *title = [selected stringByAppendingFormat:@" %@", option];
-        title = selected ? (option == FDMPolicyInherit ? @"✓ 继承全局" : [NSString stringWithFormat:@"✓ %@", FDMPolicyValueTitle(field, option)]) : FDMPolicyValueTitle(field, option);
+        NSString *title = selected ? ([option isEqual:FDMPolicyInherit] ? @"✓ 继承全局" : [NSString stringWithFormat:@"✓ %@", FDMPolicyValueTitle(field, option)])
+            : ([option isEqual:FDMPolicyInherit] ? @"继承全局" : FDMPolicyValueTitle(field, option));
         [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
             if ([option isEqual:FDMPolicyInherit]) [self->_draft removeObjectForKey:field];
             else self->_draft[field] = option;
@@ -302,22 +303,14 @@ static NSArray<NSString *> *FDMPolicyOptionsForField(NSString *field) {
 }
 
 - (void)closeEnhancementForNow {
-    // The temporary state belongs to the live WebView, not to persisted policy.
-    id delegate = UIApplication.sharedApplication.delegate;
-    id browser = FDMValue(delegate, @"browser");
-    id tabManager = FDMValue(browser, @"tabManager");
-    id tab = FDMValue(tabManager, @"selectedTab");
-    id webView = FDMValue(tab, @"webView");
-    if (!webView) {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"没有可操作的页面" message:@"请先打开网页再使用此开关。" preferredStyle:UIAlertControllerStyleAlert];
+    WKWebView *webView = self.webView;
+    if (!webView || ![FDMOriginForURL(webView.URL) isEqual:_origin]) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"原网页已经关闭或切换站点"
+            message:@"请返回原网页重新打开网站设置；不会操作其他标签。" preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
-        [self presentViewController:alert animated:YES completion:nil];
-        return;
+        [self presentViewController:alert animated:YES completion:nil]; return;
     }
-    [FDMTemporaryEnhancementOff.shared setOff:YES forObject:webView];
-    SEL reload = NSSelectorFromString(@"reload");
-    if ([webView respondsToSelector:reload]) ((void (*)(id, SEL))objc_msgSend)(webView, reload);
-    [self.navigationController popViewControllerAnimated:YES];
+    FDMConfirmPolicyReload(self, webView, YES);
 }
 @end
 #pragma mark - backup page
@@ -327,7 +320,7 @@ static NSArray<NSString *> *FDMPolicyOptionsForField(NSString *field) {
     NSMutableSet<NSString *> *_selected;
     NSURL *_pendingURL;
     FDMBackupContainer *_pendingContainer;
-    NSDictionary<NSString *, NSDictionary *> *_pendingPreview;
+    FDMBackupImportPlan *_pendingPlan;
 }
 
 - (void)viewDidLoad {
@@ -401,8 +394,24 @@ static NSArray<NSString *> *FDMPolicyOptionsForField(NSString *field) {
     NSError *error = nil;
     NSData *payload = [FDMBackupCoordinator.shared exportCategories:categories error:&error];
     if (!payload.length) { [self showMessage:error.localizedDescription ?: @"导出失败"]; return; }
-    NSString *name = [NSString stringWithFormat:@"Focus-备份-%@.browserbackup",
-        [[NSDateFormatter new] stringFromDate:NSDate.date] ?: @"backup"];
+    FDMBackupContainer *verifiedContainer = FDMBackupDecode(payload, &error);
+    if (!verifiedContainer) { [self showMessage:@"导出内容校验未完成"]; return; }
+    [self confirmExport:payload container:verifiedContainer];
+}
+- (void)confirmExport:(NSData *)payload container:(FDMBackupContainer *)container {
+    NSMutableString *summary = [NSMutableString stringWithFormat:@"备份大小：%@\n此文件没有加密。书签URL和脚本可能含私有地址或令牌，请只保存在可信位置。\n", FDMHumanSize(payload.length)];
+    for (NSString *category in FDMBackupCategoryOrder()) if (container.categories[category])
+        [summary appendFormat:@"%@：%lu项\n", FDMBackupCategoryTitle(category), (unsigned long)container.categories[category].itemCount];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"导出预览" message:summary preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"继续保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self shareVerifiedPayload:payload]; });
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+- (void)shareVerifiedPayload:(NSData *)payload {
+    NSError *error = nil;
+    NSString *name = [NSString stringWithFormat:@"Focus-备份-%@.browserbackup", NSUUID.UUID.UUIDString];
     NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:name];
     if (![payload writeToFile:path options:NSDataWritingAtomic error:&error]) { [self showMessage:error.localizedDescription ?: @"写入失败"]; return; }
     // Read back before sharing so a truncated file is never offered to the user.
@@ -433,11 +442,11 @@ static NSArray<NSString *> *FDMPolicyOptionsForField(NSString *field) {
     if (!container) { [self showMessage:error.localizedDescription ?: @"无法读取备份文件"]; return; }
     NSMutableArray *usable = [NSMutableArray array];
     for (NSString *category in FDMBackupCategoryOrder()) if (container.categories[category]) [usable addObject:category];
-    NSDictionary *preview = [FDMBackupCoordinator.shared previewContainer:container categories:usable error:&error];
-    if (!preview) { [self showMessage:error.localizedDescription ?: @"无法预览备份内容"]; return; }
+    FDMBackupImportPlan *plan = [FDMBackupCoordinator.shared previewContainer:container categories:usable replace:NO error:&error];
+    if (!plan) { [self showMessage:error.localizedDescription ?: @"无法预览备份内容"]; return; }
     _pendingContainer = container;
-    _pendingPreview = preview;
-    [self showPreview:preview container:container categories:usable];
+    _pendingPlan = plan;
+    [self showPreview:plan.countsByCategory container:container categories:plan.categories];
 }
 
 - (void)showPreview:(NSDictionary<NSString *, NSDictionary *> *)preview container:(FDMBackupContainer *)container categories:(NSArray<NSString *> *)categories {
@@ -445,7 +454,7 @@ static NSArray<NSString *> *FDMPolicyOptionsForField(NSString *field) {
     if (container.unsupportedCategories.count) [text appendFormat:@"不支持的类别：%@\n", [container.unsupportedCategories componentsJoinedByString:@"、"]];
     for (NSString *category in categories) {
         NSDictionary *counts = preview[category];
-        if (![counts[@"supported"] boolValue]) { [text appendFormat:@"%@：本版本不支持\n", FDMBackupCategoryTitle(category)]; continue; }
+        if (!counts) { [text appendFormat:@"%@：本版本不支持\n", FDMBackupCategoryTitle(category)]; continue; }
         [text appendFormat:@"%@：新增 %@，相同 %@，冲突 %@", FDMBackupCategoryTitle(category),
             counts[@"added"], counts[@"identical"], counts[@"conflict"]];
         if ([counts[@"downgraded"] integerValue] > 0) [text appendFormat:@"，权限降为询问 %@", counts[@"downgraded"]];
@@ -476,7 +485,9 @@ static NSArray<NSString *> *FDMPolicyOptionsForField(NSString *field) {
 
 - (void)applyCategories:(NSArray<NSString *> *)categories replace:(BOOL)replace {
     NSError *error = nil;
-    if (![FDMBackupCoordinator.shared applyContainer:_pendingContainer categories:categories conflicts:@{} replace:replace error:&error]) {
+    FDMBackupImportPlan *plan = _pendingPlan;
+    if (replace) plan = [FDMBackupCoordinator.shared previewContainer:_pendingContainer categories:categories replace:YES error:&error];
+    if (!plan || ![FDMBackupCoordinator.shared applyPlan:plan error:&error]) {
         [self showMessage:error.localizedDescription ?: @"导入失败"];
         return;
     }

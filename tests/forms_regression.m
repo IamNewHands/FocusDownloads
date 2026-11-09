@@ -7,6 +7,8 @@ void FDMRunFormRegressionTests(void) {
     NSCAssert(cls, @"form controller is compiled into simulator fixture");
     UIViewController *form = [[cls alloc] init];
     [form loadViewIfNeeded];
+    UITextView *address = [form valueForKey:@"address"];
+    address.text = @"https://fixture.invalid/single";
     __block NSUInteger calls = 0;
     BOOL (^success)(NSString *, NSError **) = ^BOOL(NSString *url, NSError **error) { calls++; return YES; };
     [form setValue:success forKey:@"submitURL"];
@@ -24,7 +26,7 @@ void FDMRunFormRegressionTests(void) {
         return allowed;
     };
     [retry setValue:attempt forKey:@"submitURL"];
-    UITextField *input = [retry valueForKey:@"address"];
+    UITextView *input = [retry valueForKey:@"address"];
     input.text = @"https://fixture.invalid/user-input";
     ((void (*)(id, SEL))objc_msgSend)(retry, submit);
     NSCAssert(tries == 1 && retry.navigationItem.rightBarButtonItem.enabled && [input.text isEqual:@"https://fixture.invalid/user-input"], @"failed submit preserves input and permits retry");

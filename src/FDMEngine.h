@@ -1,11 +1,9 @@
 #import "FDMCommon.h"
-
+@class FDMDownloadIntent;
 NS_ASSUME_NONNULL_BEGIN
-
 @interface FDMEngine : NSObject <NSURLSessionDownloadDelegate>
 + (instancetype)shared;
 @property (nonatomic, readonly) BOOL restoring;
-// 1...6, default 3. Only replayable GETs are throttled.
 @property (nonatomic) NSUInteger concurrencyLimit;
 - (NSArray<NSDictionary *> *)items;
 - (BOOL)canResumeKey:(NSString *)key;
@@ -15,22 +13,21 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)drainForTesting;
 #endif
 - (nullable NSString *)startURL:(NSString *)url name:(nullable NSString *)name error:(NSError **)error;
-// Queues a replayable GET; the scheduler starts it when a slot frees up.
 - (nullable NSString *)enqueueURL:(NSString *)url name:(nullable NSString *)name error:(NSError **)error;
-// Takes an immutable intent, keeps its own request context, and starts the typed transport.
-- (nullable NSString *)startIntent:(id)intent request:(NSURLRequest *)request error:(NSError **)error;
-
-// WebKit downloads. The engine owns their rows; FDMWebKitDownloads only translates callbacks.
-// Returns the row key, or nil when the intent cannot be adopted (deleted, restoring, completed).
-- (nullable NSString *)registerWebKitDownload:(id)download intent:(nullable id)intent tabID:(nullable NSString *)tabID;
-// A unique destination inside the task directory; never an existing file.
-- (nullable NSString *)destinationForWebKitDownloadKey:(NSString *)key
-                                    suggestedFilename:(nullable NSString *)filename
-                                             response:(nullable NSURLResponse *)response;
-- (void)webKitDownloadDidFinishKey:(NSString *)key;
-- (void)webKitDownloadKey:(NSString *)key failedWithMessage:(NSString *)message deleted:(BOOL)deleted;
-- (void)applyWebKitProgressKey:(NSString *)key received:(long long)received total:(long long)total;
-
+- (BOOL)enqueueURLs:(NSArray<NSString *> *)urls error:(NSError **)error;
+- (nullable NSString *)startIntent:(FDMDownloadIntent *)intent request:(NSURLRequest *)request error:(NSError **)error;
+- (nullable NSString *)registerWebKitDownload:(id)download intent:(nullable FDMDownloadIntent *)intent tabID:(nullable NSString *)tabID;
+// All WebKit execution occurs on main. The engine invokes these copied blocks asynchronously.
+- (void)bindWebKitKey:(NSString *)key transportIdentity:(NSString *)identity
+    cancel:(void (^)(void (^)(NSData * _Nullable)))cancel
+    resume:(void (^)(NSData *, NSString *, void (^)(BOOL)))resume;
+- (nullable NSString *)destinationForWebKitDownloadKey:(NSString *)key transportIdentity:(NSString *)identity
+    suggestedFilename:(nullable NSString *)filename response:(nullable NSURLResponse *)response;
+- (void)webKitDownloadDidFinishKey:(NSString *)key transportIdentity:(NSString *)identity;
+- (void)webKitDownloadKey:(NSString *)key transportIdentity:(NSString *)identity
+    failedWithMessage:(NSString *)message resumeData:(nullable NSData *)data;
+- (void)applyWebKitProgressKey:(NSString *)key transportIdentity:(NSString *)identity received:(long long)received total:(long long)total;
+- (void)invalidateWebKitContextForTabID:(NSString *)tabID;
 - (void)pauseKey:(NSString *)key;
 - (void)resumeKey:(NSString *)key;
 - (void)restartKey:(NSString *)key;

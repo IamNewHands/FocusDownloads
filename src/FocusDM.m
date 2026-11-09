@@ -10,7 +10,7 @@
 #import "FDMIntent.h"
 #import "FDMBackup.h"
 #import "FDMNativePages.h"
-#import "FDMWebKitDownloads.h"
+#import "FDMNavigation.h"
 
 static NSString *const FDMDownloadsLink = @"focusdm://downloads";
 static NSString *const FDMSitePoliciesLink = @"focusdm://site-policies";
@@ -24,15 +24,10 @@ static IMP FDMOriginalHostDownload;
 static IMP FDMOriginalDidFinishLaunch;
 static IMP FDMOriginalBackgroundEvents;
 static IMP FDMOriginalDidEnterBackground;
-static IMP FDMOriginalUpdateUserAgent;
-static IMP FDMOriginalApplyWebScale;
-static IMP FDMOriginalMenuAction;
 
 static void FDMInstallHostHooks(void);
 static void FDMOpenPage(UIViewController *host, UIViewController *page);
 static void FDMShowDownloadPill(void);
-static void FDMApplyNavigationPreferences(id webView, NSString *origin, id preferences);
-static NSString *FDMOriginForWebView(id webView);
 static UIViewController *FDMTopController(UIViewController *controller);
 static UIWindow *FDMActiveWindow(void);
 
@@ -45,41 +40,6 @@ static BOOL FDMInstallHook(Class cls, SEL selector, IMP replacement, IMP *origin
     if (original) *original = previous;
     if (!class_addMethod(cls, selector, replacement, method_getTypeEncoding(method))) method_setImplementation(method, replacement);
     return YES;
-}
-
-// The same replacement can be installed on more than one class (the host has two navigation
-// delegates). One shared `original` pointer would then dispatch a delegate's call into the other
-// class's implementation, so originals are keyed by class + selector.
-static NSMutableDictionary<NSString *, NSValue *> *FDMOriginalIMPMap(void) {
-    static NSMutableDictionary *map;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ map = [NSMutableDictionary dictionary]; });
-    return map;
-}
-
-static NSString *FDMIMPKey(Class cls, SEL selector) {
-    return [NSString stringWithFormat:@"%@|%@", NSStringFromClass(cls), NSStringFromSelector(selector)];
-}
-
-static BOOL FDMInstallClassHook(Class cls, SEL selector, IMP replacement) {
-    if (!cls || !selector) return NO;
-    Method method = class_getInstanceMethod(cls, selector);
-    if (!method) { FDMLog(@"host hook missing %@ %@", NSStringFromClass(cls), NSStringFromSelector(selector)); return NO; }
-    IMP previous = method_getImplementation(method);
-    if (previous == replacement) return YES;
-    @synchronized (FDMOriginalIMPMap()) { FDMOriginalIMPMap()[FDMIMPKey(cls, selector)] = [NSValue valueWithPointer:previous]; }
-    if (!class_addMethod(cls, selector, replacement, method_getTypeEncoding(method))) method_setImplementation(method, replacement);
-    return YES;
-}
-
-static IMP FDMOriginalIMPFor(id object, SEL selector) {
-    for (Class cls = object_getClass(object); cls; cls = class_getSuperclass(cls)) {
-        @synchronized (FDMOriginalIMPMap()) {
-            NSValue *value = FDMOriginalIMPMap()[FDMIMPKey(cls, selector)];
-            if (value) return value.pointerValue;
-        }
-    }
-    return NULL;
 }
 
 static UIWindow *FDMActiveWindow(void) {
@@ -202,6 +162,12 @@ static NSInteger FDMPreferenceType(id model) {
 }
 
 static void FDMPreferenceSelect(id self, SEL selector, id model) {
+    if (FDMPreferenceType(model) == 0x46444d) {
+        SEL hide = NSSelectorFromString(@"hideUserPreferenceView");
+        if ([self respondsToSelector:hide]) ((void (*)(id, SEL))objc_msgSend)(self, hide);
+        FDMOpenCurrentSiteSettings(self);
+        return;
+    }
     if (FDMPreferenceType(model) == 17) {
         SEL hide = NSSelectorFromString(@"hideUserPreferenceView");
         if ([self respondsToSelector:hide]) ((void (*)(id, SEL))objc_msgSend)(self, hide);
@@ -227,156 +193,6 @@ static void FDMNavigationState(id self, SEL selector, UIViewController *controll
         [controller isKindOfClass:FDMBackupViewController.class] ||
         [NSStringFromClass(controller.class) isEqual:@"FDMIconDiagnosticsViewController"]) return;
     if (FDMOriginalNavigationState) ((void (*)(id, SEL, id, BOOL))FDMOriginalNavigationState)(self, selector, controller, animated);
-}
-
-#pragma mark - site policy host wiring
-
-// The host resolves its global UA here on every navigation; a site override is applied on top of it
-// so removing an override restores the current global baseline rather than a hardcoded nil.
-static void FDMUpdateUserAgent(id self, SEL selector, id url) {
-    if (FDMOriginalUpdateUserAgent) ((void (*)(id, SEL, id))FDMOriginalUpdateUserAgent)(self, selector, url);
-    @try {
-        NSString *origin = FDMNormalizedOrigin(FDMString(url) ?: [url absoluteString]);
-        if (!origin) return;
-        NSDictionary *entry = [FDMSitePolicyStore.shared entryForOrigin:origin];
-        if (!entry) return;
-        id webView = FDMValue(self, @"webView");
-        if (!webView) return;
-        NSDictionary *baseline = FDMPolicyGlobalBaseline();
-        id agent = entry[FDMPolicyUserAgent];
-        if (agent == NSNull.null) {
-            // Explicit removal: fall back to whatever the global baseline is now.
-            agent = baseline[FDMPolicyUserAgent];
-            if (agent == NSNull.null) agent = nil;
-        } else if (![agent isKindOfClass:NSString.class]) {
-            return;
-        }
-        [webView setValue:agent forKey:@"customUserAgent"];
-    } @catch (NSException *exception) { FDMLog(@"site UA override skipped: %@", exception.reason); }
-}
-
-// The host derives page zoom from its own font-size setting; a site override replaces that result.
-static void FDMApplyWebScale(id self, SEL selector) {
-    if (FDMOriginalApplyWebScale) ((void (*)(id, SEL))FDMOriginalApplyWebScale)(self, selector);
-    @try {
-        id webView = self;
-        NSString *current = FDMString(FDMValue(webView, @"URL"));
-        NSString *origin = FDMNormalizedOrigin(current);
-        if (!origin) return;
-        NSDictionary *entry = [FDMSitePolicyStore.shared entryForOrigin:origin];
-        id zoom = entry[FDMPolicyPageZoom];
-        if (![zoom isKindOfClass:NSNumber.class]) return;
-        double value = [zoom doubleValue];
-        if (!isfinite(value) || value < 0.5 || value > 3.0) return;
-        [webView setValue:@(value) forKey:@"pageZoom"];
-    } @catch (NSException *exception) { FDMLog(@"site zoom override skipped: %@", exception.reason); }
-}
-
-static NSString *FDMOriginForWebView(id webView) {
-    return FDMNormalizedOrigin(FDMString(FDMValue(webView, @"URL")));
-}
-
-// Captures the real navigation request so a download response can reuse its exact context.
-static void FDMRecordIntent(id webView, id navigationAction, unsigned long long generation) {
-    if (!webView || !navigationAction) return;
-    NSURLRequest *request = FDMValue(navigationAction, @"request");
-    if (![request isKindOfClass:NSURLRequest.class]) return;
-    NSString *tabID = FDMString(FDMValue(webView, @"focusdmTabID"));
-    if (!tabID.length) {
-        tabID = NSUUID.UUID.UUIDString;
-        @try { [webView setValue:tabID forKey:@"focusdmTabID"]; }
-        @catch (NSException *exception) { objc_setAssociatedObject(webView, "FocusDMTabID", tabID, OBJC_ASSOCIATION_COPY_NONATOMIC); }
-    }
-    id dataStore = FDMValue(FDMValue(webView, @"configuration"), @"websiteDataStore");
-    NSString *source = FDMOriginForWebView(webView);
-    BOOL userInitiated = [FDMValue(navigationAction, @"navigationType") integerValue] == 0;
-    [FDMIntentRegistry.shared registerRequest:request tabID:tabID navigationGeneration:generation
-                                 sourceOrigin:source suggestedFilename:nil dataStore:dataStore userInitiated:userInitiated];
-}
-
-static void FDMNavAction(id self, SEL selector, WKWebView *webView, id navigationAction, id preferences, void (^decisionHandler)(NSInteger)) {
-    NSString *origin = FDMNormalizedOrigin(FDMString(FDMValue(FDMValue(navigationAction, @"request"), @"URL")));
-    if (origin) {
-        FDMApplyNavigationPreferences(webView, origin, preferences);
-        unsigned long long generation = [FDMValue(webView, @"focusdmNavigationGeneration") unsignedLongLongValue] + 1;
-        @try { [webView setValue:@(generation) forKey:@"focusdmNavigationGeneration"]; }
-        @catch (NSException *exception) { /* generation stays advisory only */ }
-        FDMRecordIntent(webView, navigationAction, generation);
-    }
-    IMP original = FDMOriginalIMPFor(self, selector);
-    if (original) ((void (*)(id, SEL, id, id, id, void (^)(NSInteger)))original)(self, selector, webView, navigationAction, preferences, decisionHandler);
-    else if (decisionHandler) decisionHandler(1);
-}
-
-// A response that is a download becomes a WKDownload so the original request context (POST body,
-// cookies, one-time ticket) is preserved instead of being re-requested as an anonymous GET.
-static void FDMNavResponse(id self, SEL selector, WKWebView *webView, id navigationResponse, void (^decisionHandler)(NSInteger)) {
-    NSHTTPURLResponse *response = FDMValue(navigationResponse, @"response");
-    BOOL isDownload = NO;
-    if ([response isKindOfClass:NSHTTPURLResponse.class]) {
-        NSString *disposition = response.allHeaderFields[@"Content-Disposition"];
-        NSString *mime = response.MIMEType.lowercaseString;
-        BOOL attachment = [disposition.lowercaseString containsString:@"attachment"];
-        // A navigation that resolves to a non-document body is a file the user asked for.
-        BOOL fileBody = mime.length && ![mime hasPrefix:@"text/html"] && ![mime hasPrefix:@"application/xhtml"]
-            && ![mime hasPrefix:@"application/json"] && ![mime hasPrefix:@"text/xml"];
-        isDownload = attachment || fileBody;
-        if (isDownload) FDMLog(@"download response origin=%@ status=%ld mime=%@", FDMOriginForURL(response.URL), (long)response.statusCode, mime);
-    }
-    if (isDownload) {
-        NSString *filename = nil;
-        NSString *disposition = response.allHeaderFields[@"Content-Disposition"];
-        NSRange range = [disposition rangeOfString:@"filename=" options:NSCaseInsensitiveSearch];
-        if (range.location != NSNotFound) {
-            filename = [disposition substringFromIndex:NSMaxRange(range)];
-            filename = [filename stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"\"'; "]];
-        }
-        NSString *tabID = FDMString(FDMValue(webView, @"focusdmTabID"));
-        FDMDownloadIntent *intent = [FDMIntentRegistry.shared takeIntentMatchingURL:response.URL];
-        SEL downloadSelector = NSSelectorFromString(@"startDownloadUsingRequest:completionHandler:");
-        NSURLRequest *original = FDMValue(navigationResponse, @"request");
-        if ([webView respondsToSelector:downloadSelector] && [original isKindOfClass:NSURLRequest.class]) {
-            // Keep the original navigation as a WebKit download. The completion handler receives the
-            // WKDownload; it is adopted by the single WebKit transport owner.
-            ((void (*)(id, SEL, id, id))objc_msgSend)(webView, downloadSelector, original, ^(id download) {
-                if (download) [FDMWebKitDownloads.shared adoptDownload:download intent:intent tabID:tabID];
-                else FDMLog(@"webkit download start returned no download");
-                FDMShowDownloadPill();
-            });
-            if (decisionHandler) decisionHandler(0);  // cancel the navigation; the download carries it
-            return;
-        }
-        // No WKDownload on this system: say so instead of silently re-requesting the URL as a GET.
-        FDMLog(@"download response cannot be preserved on this system version");
-        if (intent) {
-            [FDMEngine.shared startIntent:intent request:[FDMIntentRegistry.shared requestForIntent:intent.intentID] error:nil];
-        }
-        FDMShowDownloadPill();
-        (void)filename;
-    }
-    IMP original = FDMOriginalIMPFor(self, selector);
-    if (original) ((void (*)(id, SEL, id, id, void (^)(NSInteger)))original)(self, selector, webView, navigationResponse, decisionHandler);
-    else if (decisionHandler) decisionHandler(1);
-}
-
-// Applies per-site preferences to a navigation before it commits.
-static void FDMApplyNavigationPreferences(id webView, NSString *origin, id preferences) {
-    if (!origin) return;
-    NSDictionary *entry = [FDMSitePolicyStore.shared entryForOrigin:origin];
-    if (!entry) return;
-    BOOL enhancementsOff = [FDMTemporaryEnhancementOff.shared isOffForObject:webView];
-    @try {
-        id mode = entry[FDMPolicyContentMode];
-        if ([mode isKindOfClass:NSString.class] && preferences) {
-            // 0 = recommended (mobile), 1 = desktop.
-            [preferences setValue:@([mode isEqual:@"desktop"] ? 1 : 0) forKey:@"preferredContentMode"];
-        }
-        id javascript = entry[FDMPolicyPageJavaScript];
-        if ([javascript isKindOfClass:NSString.class] && preferences) {
-            [preferences setValue:@([javascript isEqual:@"on"]) forKey:@"allowsContentJavaScript"];
-        }
-        (void)enhancementsOff;
-    } @catch (NSException *exception) { FDMLog(@"navigation preferences skipped: %@", exception.reason); }
 }
 
 static void FDMShowDownloadPill(void) {
@@ -439,32 +255,6 @@ static void FDMDidEnterBackground(id self, SEL selector, UIApplication *applicat
     if (FDMOriginalDidEnterBackground) ((void (*)(id, SEL, id))FDMOriginalDidEnterBackground)(self, selector, application);
 }
 
-// Adds "网站设置" to the host's own command alert without replacing it: the original builds and
-// presents the alert, then we append one action for the current origin.
-static void FDMCommandMenu(id self, SEL selector, id sender) {
-    if (FDMOriginalMenuAction) ((void (*)(id, SEL, id))FDMOriginalMenuAction)(self, selector, sender);
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIViewController *top = FDMTopController(FDMActiveWindow().rootViewController);
-        UIAlertController *alert = [top isKindOfClass:UIAlertController.class] ? (UIAlertController *)top : nil;
-        if (!alert || alert.preferredStyle != UIAlertControllerStyleActionSheet) return;
-        for (UIAlertAction *existing in alert.actions) if ([existing.title containsString:@"网站设置"]) return;
-        id tab = FDMValue(FDMValue(self, @"tabManager"), @"selectedTab");
-        NSString *origin = FDMOriginForWebView(FDMValue(tab, @"webView"));
-        if (!origin) return;
-        __weak typeof(self) weakSelf = self;
-        [alert addAction:[UIAlertAction actionWithTitle:@"网站设置" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            FDMSitePolicyEditViewController *page = [[FDMSitePolicyEditViewController alloc] initWithOrigin:origin];
-            page.didChangePolicy = ^(BOOL reload) {
-                if (!reload) return;
-                id webView = FDMValue(FDMValue(FDMValue(weakSelf, @"tabManager"), @"selectedTab"), @"webView");
-                SEL reloadSelector = NSSelectorFromString(@"reload");
-                if ([webView respondsToSelector:reloadSelector]) ((void (*)(id, SEL))objc_msgSend)(webView, reloadSelector);
-            };
-            FDMOpenPage(weakSelf, page);
-        }]];
-    });
-}
-
 static void FDMInstallHostHooks(void) {
     Class settings = NSClassFromString(@"SettingViewController");
     FDMInstallHook(settings, @selector(viewWillAppear:), (IMP)FDMSettingsAppear, &FDMOriginalSettingsAppear);
@@ -473,16 +263,8 @@ static void FDMInstallHostHooks(void) {
     FDMInstallHook(NSClassFromString(@"PreferenceItemCell"), NSSelectorFromString(@"updateWithModel:"), (IMP)FDMPreferenceUpdate, &FDMOriginalPreferenceUpdate);
     FDMInstallHook(NSClassFromString(@"BaseNavigationController"), NSSelectorFromString(@"applyNavigationBarStateForViewController:animated:"), (IMP)FDMNavigationState, &FDMOriginalNavigationState);
     FDMInstallHook(NSClassFromString(@"FileManager"), NSSelectorFromString(@"downloadWithUrl:title:"), (IMP)FDMHostDownload, &FDMOriginalHostDownload);
-    // Site policy: UA is re-resolved per navigation, zoom per page load, and preferences per action.
-    FDMInstallHook(NSClassFromString(@"Tab"), NSSelectorFromString(@"updateUserAgentWithURL:"), (IMP)FDMUpdateUserAgent, &FDMOriginalUpdateUserAgent);
-    FDMInstallHook(NSClassFromString(@"PandaWebView"), NSSelectorFromString(@"applyWebScaleForCurrentURL"), (IMP)FDMApplyWebScale, &FDMOriginalApplyWebScale);
-    // The host has two navigation delegates; both must be wrapped or one path bypasses the policy.
-    // They share one replacement IMP, so the original is recorded per class.
-    FDMInstallClassHook(NSClassFromString(@"WebViewNavDelegate"), @selector(webView:decidePolicyForNavigationAction:preferences:decisionHandler:), (IMP)FDMNavAction);
-    FDMInstallClassHook(NSClassFromString(@"WebViewNavDelegate"), @selector(webView:decidePolicyForNavigationResponse:decisionHandler:), (IMP)FDMNavResponse);
-    FDMInstallClassHook(browser, @selector(webView:decidePolicyForNavigationAction:preferences:decisionHandler:), (IMP)FDMNavAction);
-    FDMInstallClassHook(browser, @selector(webView:decidePolicyForNavigationResponse:decisionHandler:), (IMP)FDMNavResponse);
-    FDMInstallHook(browser, NSSelectorFromString(@"_showCommandMenu:"), (IMP)FDMCommandMenu, &FDMOriginalMenuAction);
+    FDMInstallNavigationCreatedCallback(^{ FDMShowDownloadPill(); });
+    FDMInstallNavigationHooks();
 }
 
 __attribute__((constructor)) static void FDMInitialize(void) {

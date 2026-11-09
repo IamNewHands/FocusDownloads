@@ -50,6 +50,11 @@ static void FDMTestJSON(void) {
     FDMCheck(!FDMJSONNonNegativeInteger(numbers[@"f"], 100, &value), @"fraction is not an integer");
     FDMCheck(!FDMJSONNonNegativeInteger(@(-1), 100, &value), @"negative rejected");
 
+    FDMCheck(!FDMJSONNonNegativeInteger(@18446744073709551615ULL, 9007199254740991ULL, NULL), @"integral overflow is not rounded into range");
+    id fractionalBoundary = FDMJSONParseData(FDMData(@"9007199254740990.9"), NULL);
+    FDMCheck(!FDMJSONNonNegativeInteger(fractionalBoundary, 9007199254740991ULL, NULL), @"large fractional count rejected without double rounding");
+    FDMCheck(FDMJSONParseData(FDMData(@"18446744073709551616"), NULL) == nil, @"integer parser overflow rejected");
+
     // Canonical encoding is key-order stable so a hash of the bytes is meaningful.
     NSData *left = FDMJSONCanonicalData(@{@"b": @2, @"a": @1}, &error);
     NSData *right = FDMJSONCanonicalData(@{@"a": @1, @"b": @2}, &error);
@@ -157,7 +162,9 @@ static void FDMTestBackupContainer(void) {
     FDMCheck(FDMBackupDecode(FDMData(unknownTop), &error) == nil, @"unknown top-level field rejected");
     NSString *badFormat = [text stringByReplacingOccurrencesOfString:@"ios-browser-backup" withString:@"other-backup"];
     FDMCheck(FDMBackupDecode(FDMData(badFormat), &error) == nil, @"foreign file rejected");
-    NSString *badVersion = [text stringByReplacingOccurrencesOfString:@"\"schemaVersion\":1,\"backupID\"" withString:@"\"schemaVersion\":9,\"backupID\""];
+    NSMutableDictionary *versionObject = [[NSJSONSerialization JSONObjectWithData:encoded options:NSJSONReadingMutableContainers error:NULL] mutableCopy];
+    versionObject[@"schemaVersion"] = @9;
+    NSString *badVersion = [[NSString alloc] initWithData:FDMJSONCanonicalData(versionObject, NULL) encoding:NSUTF8StringEncoding];
     FDMCheck(FDMBackupDecode(FDMData(badVersion), &error) == nil, @"unsupported container version rejected");
     // Duplicate JSON keys inside the container are refused by the strict parser.
     NSString *duplicateKey = [text stringByReplacingOccurrencesOfString:@"\"format\":\"ios-browser-backup\""

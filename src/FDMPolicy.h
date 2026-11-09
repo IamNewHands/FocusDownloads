@@ -46,6 +46,8 @@ FOUNDATION_EXPORT NSArray<NSString *> *FDMPolicyOverriddenFields(NSDictionary * 
 - (BOOL)setEntry:(nullable NSDictionary *)entry origin:(NSString *)origin error:(NSError **)error;
 - (BOOL)resetOrigin:(NSString *)origin error:(NSError **)error;
 - (BOOL)replaceDocument:(NSDictionary *)validatedDocument expectedRevision:(unsigned long long)expected error:(NSError **)error;
+// Internal backup transaction: restore an exact trusted local snapshot without import normalization.
+- (BOOL)restoreDocument:(NSDictionary *)validatedDocument publish:(BOOL)publish error:(NSError **)error;
 // Set when the on-disk file could not be understood; writes are refused so the file survives.
 - (BOOL)writable;
 @end

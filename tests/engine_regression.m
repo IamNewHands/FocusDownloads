@@ -6,6 +6,7 @@
 #import <Foundation/Foundation.h>
 #import "FDMEngine.h"
 #import "FDMStore.h"
+#import "FDMIntent.h"
 #import <stdio.h>
 #import <stdlib.h>
 
@@ -30,6 +31,7 @@ static void FDMECheck(BOOL condition, NSString *message) {
 @property (nonatomic, strong) NSURLResponse *response;
 @property (nonatomic) int64_t countOfBytesReceived;
 @property (nonatomic, strong) NSURL *requestedURL;
+@property (nonatomic, copy) NSURLRequest *requestedRequest;
 @property (nonatomic, copy) NSData *resumeDataUsed;
 @property (nonatomic, copy) void (^pauseCompletion)(NSData *);
 @property (nonatomic) NSUInteger resumeCalls;
@@ -74,6 +76,7 @@ static void FDMECheck(BOOL condition, NSString *message) {
 @property (nonatomic) NSUInteger nextIdentifier;
 - (void)getAllTasksWithCompletionHandler:(void (^)(NSArray<__kindof NSURLSessionTask *> *))completion;
 - (NSURLSessionDownloadTask *)downloadTaskWithURL:(NSURL *)url;
+- (NSURLSessionDownloadTask *)downloadTaskWithRequest:(NSURLRequest *)request;
 - (NSURLSessionDownloadTask *)downloadTaskWithResumeData:(NSData *)data;
 - (void)replyEnumeration;
 - (void)completeTask:(FDMEFakeTask *)task error:(NSError *)error;
@@ -102,8 +105,12 @@ static void FDMECheck(BOOL condition, NSString *message) {
     return task;
 }
 - (NSURLSessionDownloadTask *)downloadTaskWithURL:(NSURL *)url {
+    return [self downloadTaskWithRequest:[NSURLRequest requestWithURL:url]];
+}
+- (NSURLSessionDownloadTask *)downloadTaskWithRequest:(NSURLRequest *)request {
     FDMEFakeTask *task = [self makeTask];
-    task.requestedURL = url;
+    task.requestedURL = request.URL;
+    task.requestedRequest = [request copy];
     return (NSURLSessionDownloadTask *)(id)task;
 }
 - (NSURLSessionDownloadTask *)downloadTaskWithResumeData:(NSData *)data {
@@ -761,6 +768,56 @@ static void FDMETestDurableHistoryAndStaleTasks(BOOL newerAttempt) {
     FDMECases++;
 }
 
+static void FDMETestSchedulerAndAtomicBatch(void) {
+    FDMEBeginCase(@"scheduler-concurrency-batch");
+    FDMEFakeSession *session = [FDMEFakeSession new]; FDMEngine *engine = FDMENewEngine(session, YES);
+    engine.concurrencyLimit = 1; [engine drainForTesting];
+    NSError *error = nil;
+    NSString *first = FDMEStart(engine);
+    NSArray *urls = @[@"https://fixture.invalid/batch-1", @"https://fixture.invalid/batch-2"];
+    FDMECheck([engine enqueueURLs:urls error:&error], @"batch waiting rows accepted");
+    FDMECheck(session.created.count == 1 && engine.items.count == 3, @"real transport creation respects one-slot queue");
+    FDMEFakeTask *old = session.created.firstObject;
+    [engine pauseKey:first]; [engine drainForTesting];
+    [old deliverPauseData:FDMEResume(@"scheduler-partial")]; [engine drainForTesting];
+    FDMECheck(session.created.count == 1, @"cancel resume callback alone cannot free slot");
+    [session completeTask:old error:FDMECancelled(nil)]; [engine drainForTesting];
+    FDMECheck(session.created.count == 2 && [session.created.lastObject.requestedURL.absoluteString isEqual:urls[0]], @"slot release schedules FIFO GET exactly once");
+    NSUInteger before = engine.items.count, created = session.created.count;
+    FDMECheck(![engine enqueueURLs:@[@"https://fixture.invalid/good", @"file:///not-web"] error:&error], @"invalid batch rejected before side effects");
+    FDMECheck(engine.items.count == before && session.created.count == created, @"bad batch has zero task mutation");
+    NSMutableArray *large = [NSMutableArray array];
+    for (NSUInteger i=0;i<101;i++) [large addObject:urls[0]];
+    FDMECheck(![engine enqueueURLs:large error:&error], @"batch over preview cap rejected");
+    FDMECases++;
+}
+
+@interface FDMEPrivateStore : NSObject
+- (BOOL)isPersistent;
+@end
+@implementation FDMEPrivateStore
+- (BOOL)isPersistent { return NO; }
+@end
+static void FDMETestPrivateIntentAndOriginalPOST(void) {
+    FDMEBeginCase(@"private-and-original-post");
+    FDMEFakeSession *session=[FDMEFakeSession new]; FDMEngine *engine=FDMENewEngine(session, YES);
+    NSMutableURLRequest *post=[NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"https://fixture.invalid/post?ticket=sensitive"]];
+    post.HTTPMethod=@"POST"; post.HTTPBody=[@"secret-body" dataUsingEncoding:NSUTF8StringEncoding];
+    FDMDownloadIntent *intent=[[FDMDownloadIntent alloc] initWithRequest:post tabID:@"private-tab" generation:4
+        sourceOrigin:@"https://fixture.invalid" transport:FDMTransportWebKitDownload dataStore:[FDMEPrivateStore new] userInitiated:YES policyRevision:0];
+    NSObject *download=[NSObject new];
+    // This fixture tests the single state owner only; real WKDownload POST exactly-once is the simulator test.
+    NSString *key=[engine registerWebKitDownload:download intent:intent tabID:@"private-tab"];
+    FDMECheck(key && engine.items.count == 1 && session.created.count == 0, @"WebKit POST adopt never creates NSURLSession GET");
+    NSData *tasks=[NSData dataWithContentsOfFile:FDMEDataPath(@"tasks.json")];
+    NSString *text=[[NSString alloc] initWithData:tasks encoding:NSUTF8StringEncoding];
+    FDMECheck(![text containsString:key] && ![text containsString:@"sensitive"], @"private row and request secrets never persist");
+    __block NSError *failure=nil;
+    [engine removeKey:key deleteFile:NO completion:^(NSError *error) { failure=error; }]; [engine drainForTesting]; FDMEFlushMain();
+    FDMECheck(!failure && ![[NSString stringWithContentsOfFile:FDMEDataPath(@"deleted-task-ids.json") encoding:NSUTF8StringEncoding error:NULL] containsString:key], @"private deletion leaves no durable tombstone");
+    FDMECases++;
+}
+
 void FDMRunEngineRegression(void) {
     @autoreleasepool {
         FDMECheck(NSThread.isMainThread, @"call the regression entry on main");
@@ -772,6 +829,8 @@ void FDMRunEngineRegression(void) {
         FDMECheck([FDMDocumentsPath() isEqual:FDMERoot], @"FDM_TESTING must route all owner files into the new fixture root");
         FDMECases = 0;
         FDMETestDistinctIDs();
+        FDMETestSchedulerAndAtomicBatch();
+        FDMETestPrivateIntentAndOriginalPOST();
         FDMETestPauseOrder(YES); FDMETestPauseOrder(NO);
         FDMETestPauseWithoutData();
         FDMETestExitAfterFirstPauseData(YES); FDMETestExitAfterFirstPauseData(NO);

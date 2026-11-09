@@ -1,6 +1,7 @@
 #import "FDMJSON.h"
 #import <CoreFoundation/CoreFoundation.h>
 #import <math.h>
+#import <limits.h>
 
 NSUInteger const FDMJSONMaxDepth = 32;
 NSUInteger const FDMJSONMaxBytes = 32 * 1024 * 1024;
@@ -70,16 +71,23 @@ static NSNumber *FDMScanNumber(FDMScanner *scanner) {
     }
     NSString *text = [NSString stringWithCharacters:scanner->chars + start length:scanner->index - start];
     if (!fractional) {
-        // Integral literals stay exact integers so a count never becomes a rounded double.
-        NSNumberFormatter *formatter = [[NSNumberFormatter alloc] init];
-        formatter.numberStyle = NSNumberFormatterNoStyle;
-        formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
-        NSNumber *value = [formatter numberFromString:text];
-        if (value) return value;
+        BOOL negative = scanner->chars[start] == '-';
+        unsigned long long integer = 0;
+        for (NSUInteger i = integerStart; i < integerStart + digits; i++) {
+            unsigned digit = scanner->chars[i] - '0';
+            if (integer > (ULLONG_MAX - digit) / 10) return nil;
+            integer = integer * 10 + digit;
+        }
+        if (negative) {
+            if (integer > (unsigned long long)LLONG_MAX + 1ULL) return nil;
+            if (integer == (unsigned long long)LLONG_MAX + 1ULL) return @(LLONG_MIN);
+            return @(-(long long)integer);
+        }
+        return @(integer);
     }
-    double raw = text.doubleValue;
-    if (!isfinite(raw)) return nil;
-    return @(raw);
+    NSDecimalNumber *number = [NSDecimalNumber decimalNumberWithString:text locale:@{NSLocaleDecimalSeparator: @"."}];
+    if ([number isEqual:NSDecimalNumber.notANumber] || !isfinite(number.doubleValue)) return nil;
+    return number;
 }
 
 static BOOL FDMReadHex4(FDMScanner *scanner, uint32_t *out);
@@ -88,8 +96,8 @@ static BOOL FDMAppendCodePoint(NSMutableString *result, uint32_t code) {
     if (code > 0x10FFFF || (code >= 0xD800 && code <= 0xDFFF)) return NO;
     if (code <= 0xFFFF) { [result appendFormat:@"%C", (unichar)code]; return YES; }
     uint32_t value = code - 0x10000;
-    [result appendFormat:@"%C", (unichar)(0xD800 + (value >> 10))];
-    [result appendFormat:@"%C", (unichar)(0xDC00 + (value & 0x3FF))];
+    unichar pair[2] = {(unichar)(0xD800 + (value >> 10)), (unichar)(0xDC00 + (value & 0x3FF))};
+    [result appendString:[NSString stringWithCharacters:pair length:2]];
     return YES;
 }
 
@@ -101,7 +109,16 @@ static NSString *FDMScanString(FDMScanner *scanner) {
         unichar c = scanner->chars[scanner->index++];
         if (c == '"') return result;
         if (c < 0x20) return nil;
-        if (c != '\\') { [result appendFormat:@"%C", c]; continue; }
+        if (c != '\\') {
+            if (c >= 0xD800 && c <= 0xDBFF) {
+                if (scanner->index >= scanner->length) return nil;
+                unichar low = scanner->chars[scanner->index++];
+                if (low < 0xDC00 || low > 0xDFFF) return nil;
+                unichar pair[2] = {c, low}; [result appendString:[NSString stringWithCharacters:pair length:2]];
+            } else if (c >= 0xDC00 && c <= 0xDFFF) return nil;
+            else [result appendString:[NSString stringWithCharacters:&c length:1]];
+            continue;
+        }
         if (scanner->index >= scanner->length) return nil;
         unichar escape = scanner->chars[scanner->index++];
         switch (escape) {
@@ -158,7 +175,7 @@ static NSArray *FDMScanArray(FDMScanner *scanner, NSError **error) {
     scanner->index++;  // '['
     NSMutableArray *result = [NSMutableArray array];
     FDMScanWhitespace(scanner);
-    if (scanner->index < scanner->length && scanner->chars[scanner->index] == ']') { scanner->index++; return result; }
+    if (scanner->index < scanner->length && scanner->chars[scanner->index] == ']') { scanner->index++; return [result copy]; }
     while (YES) {
         id element = FDMScanValue(scanner, error);
         if (!element) return nil;
@@ -166,7 +183,7 @@ static NSArray *FDMScanArray(FDMScanner *scanner, NSError **error) {
         FDMScanWhitespace(scanner);
         if (scanner->index >= scanner->length) { if (error) *error = FDMJSONError(@"数组未闭合"); return nil; }
         unichar c = scanner->chars[scanner->index++];
-        if (c == ']') return result;
+        if (c == ']') return [result copy];
         if (c != ',') { if (error) *error = FDMJSONError(@"数组分隔符无效"); return nil; }
         FDMScanWhitespace(scanner);
     }
@@ -177,7 +194,7 @@ static NSDictionary *FDMScanObject(FDMScanner *scanner, NSError **error) {
     NSMutableDictionary *result = [NSMutableDictionary dictionary];
     NSMutableSet<NSString *> *keys = [NSMutableSet set];
     FDMScanWhitespace(scanner);
-    if (scanner->index < scanner->length && scanner->chars[scanner->index] == '}') { scanner->index++; return result; }
+    if (scanner->index < scanner->length && scanner->chars[scanner->index] == '}') { scanner->index++; return [result copy]; }
     while (YES) {
         FDMScanWhitespace(scanner);
         NSString *key = FDMScanString(scanner);
@@ -193,7 +210,7 @@ static NSDictionary *FDMScanObject(FDMScanner *scanner, NSError **error) {
         FDMScanWhitespace(scanner);
         if (scanner->index >= scanner->length) { if (error) *error = FDMJSONError(@"对象未闭合"); return nil; }
         unichar c = scanner->chars[scanner->index++];
-        if (c == '}') return result;
+        if (c == '}') return [result copy];
         if (c != ',') { if (error) *error = FDMJSONError(@"对象分隔符无效"); return nil; }
     }
 }
@@ -320,10 +337,15 @@ BOOL FDMJSONIsFiniteNumber(id value) {
 
 BOOL FDMJSONNonNegativeInteger(id value, unsigned long long maximum, unsigned long long *out) {
     if (!FDMJSONIsFiniteNumber(value)) return NO;
-    double raw = [value doubleValue];
-    if (raw < 0 || raw > (double)maximum) return NO;
-    if (raw != floor(raw)) return NO;
-    if (out) *out = (unsigned long long)raw;
+    NSDecimalNumber *decimal = [NSDecimalNumber decimalNumberWithString:[value stringValue]
+                                                               locale:@{NSLocaleDecimalSeparator: @"."}];
+    NSDecimalNumber *upper = [NSDecimalNumber decimalNumberWithString:[NSString stringWithFormat:@"%llu", maximum]];
+    if ([decimal isEqual:NSDecimalNumber.notANumber] || [decimal compare:NSDecimalNumber.zero] == NSOrderedAscending ||
+        [decimal compare:upper] == NSOrderedDescending) return NO;
+    NSDecimalNumberHandler *integral = [NSDecimalNumberHandler decimalNumberHandlerWithRoundingMode:NSRoundPlain scale:0
+        raiseOnExactness:NO raiseOnOverflow:NO raiseOnUnderflow:NO raiseOnDivideByZero:NO];
+    if ([decimal compare:[decimal decimalNumberByRoundingAccordingToBehavior:integral]] != NSOrderedSame) return NO;
+    if (out) *out = decimal.unsignedLongLongValue;
     return YES;
 }
 

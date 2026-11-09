@@ -1,6 +1,9 @@
 #import "FDMCommon.h"
+#import "FDMBackupRepository.h"
 
 NS_ASSUME_NONNULL_BEGIN
+
+@protocol FDMBackupSQLDatabase;
 
 FOUNDATION_EXPORT NSString *const FDMBackupFormat;
 FOUNDATION_EXPORT NSString *const FDMBackupDidChangeNotification;
@@ -16,6 +19,8 @@ FOUNDATION_EXPORT NSUInteger const FDMBackupMaxURLBytes;       // 8192 UTF-8
 
 // Category identifiers. Order is the export order and the UI order.
 FOUNDATION_EXPORT NSString *const FDMBackupCategoryBookmarks;
+// Home shortcut items share the bookmark database but are a separate selectable category.
+FOUNDATION_EXPORT NSString *const FDMBackupCategoryHomeTags;
 FOUNDATION_EXPORT NSString *const FDMBackupCategorySearch;
 FOUNDATION_EXPORT NSString *const FDMBackupCategorySitePolicies;
 FOUNDATION_EXPORT NSString *const FDMBackupCategoryPreferences;
@@ -53,39 +58,37 @@ FOUNDATION_EXPORT NSData * _Nullable FDMBackupEncode(NSArray<FDMBackupCategory *
                                                      NSError **error);
 FOUNDATION_EXPORT FDMBackupContainer * _Nullable FDMBackupDecode(NSData *data, NSError **error);
 
-// One repository contract: export a snapshot, validate an import, stage, commit, roll back.
-@protocol FDMBackupProvider <NSObject>
-- (NSString *)categoryIdentifier;
-// Immutable category payload + the revision it was read at.
-- (nullable NSData *)exportSnapshotWithRevision:(unsigned long long *)revision error:(NSError **)error;
-- (nullable id)validateImportPayload:(NSData *)payload error:(NSError **)error;
-// Counts for the preview. Keys: added, identical, conflict, downgraded, disabled, unsupported.
-- (NSDictionary<NSString *, NSNumber *> *)previewCountsForValidated:(id)validated error:(NSError **)error;
-// Stages the change without touching live state; returns an opaque handle.
-- (nullable id)prepareImport:(id)validated expectedRevision:(unsigned long long)expected error:(NSError **)error;
-- (BOOL)commitPrepared:(id)prepared error:(NSError **)error;
-- (BOOL)rollbackPrepared:(id)prepared error:(NSError **)error;
-- (void)reloadCommittedState;
-@end
-
+// Orchestrates repositories. Every write happens inside each repository's own transaction; the
+// coordinator only sequences them, keeps the journal, and guarantees a defined recovery path.
 @interface FDMBackupCoordinator : NSObject
 + (instancetype)shared;
-- (void)registerProvider:(id<FDMBackupProvider>)provider;
+
+// Injection point for the regression build; production uses the host providers.
+- (void)registerRepository:(id<FDMBackupRepository>)repository;
+// Registers a repository together with the database that owns its storage domain. Repositories that
+// share one database must be registered with the same object so a multi-category restore commits in
+// a single transaction.
+- (void)registerRepository:(id<FDMBackupRepository>)repository database:(id<FDMBackupSQLDatabase>)database;
+
 - (NSArray<NSString *> *)availableCategories;
 
-// Export. Only the requested categories are read; each provider is asked once under one epoch.
+// Export. Only the requested categories are read, each once, under one serial consistency epoch.
 - (nullable NSData *)exportCategories:(NSArray<NSString *> *)categories error:(NSError **)error;
 
-// Restore. decode → preview → prepare all → journal → commit all → verify → marker.
+// Opens and fully validates a backup file without changing any state.
 - (nullable FDMBackupContainer *)openBackupAtURL:(NSURL *)url error:(NSError **)error;
-- (NSDictionary<NSString *, NSDictionary *> *)previewContainer:(FDMBackupContainer *)container
-                                                    categories:(NSArray<NSString *> *)categories
-                                                         error:(NSError **)error;
-- (BOOL)applyContainer:(FDMBackupContainer *)container
-            categories:(NSArray<NSString *> *)categories
-             conflicts:(NSDictionary<NSString *, NSString *> *)conflicts
-               replace:(BOOL)replace
-                 error:(NSError **)error;
+
+// Validates, classifies and freezes an import plan. `replace` selects replacement of the chosen
+// categories; NO keeps local rows on conflict (the default).
+- (nullable FDMBackupImportPlan *)previewContainer:(FDMBackupContainer *)container
+                                        categories:(NSArray<NSString *> *)categories
+                                           replace:(BOOL)replace
+                                             error:(NSError **)error;
+
+// Applies a frozen plan: barrier → journal(before/after) → per-category transaction → read-back
+// verify → committed marker. A failure at any point restores the before snapshots.
+- (BOOL)applyPlan:(FDMBackupImportPlan *)plan error:(NSError **)error;
+
 // Called at launch before any configuration is exposed. Idempotent.
 - (void)recoverInterruptedTransaction;
 @property (nonatomic, readonly, copy, nullable) NSString *recoveryNotice;

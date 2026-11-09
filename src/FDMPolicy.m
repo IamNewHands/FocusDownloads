@@ -64,10 +64,11 @@ NSString *FDMNormalizedOrigin(NSString *urlOrOrigin) {
     NSString *scheme = components.scheme.lowercaseString;
     if (!([scheme isEqual:@"http"] || [scheme isEqual:@"https"])) return nil;
     if (components.user.length || components.password.length) return nil;
-    NSString *host = components.host.lowercaseString;
+    NSString *host = components.URL.host.lowercaseString;
     if (!host.length) return nil;
-    // An IDN host arrives percent-decoded or already ASCII; never re-encode an existing punycode.
-    if ([host containsString:@" "] || [host containsString:@"/"]) return nil;
+    if ([host rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound ||
+        [host containsString:@" "] || [host containsString:@"/"] || [host containsString:@"%"] ) return nil;
+    if ([host containsString:@":"] && ![host hasPrefix:@"["]) host = [NSString stringWithFormat:@"[%@]", host];
     NSNumber *port = components.port;
     NSInteger effective = port ? port.integerValue : ([scheme isEqual:@"https"] ? 443 : 80);
     if (effective <= 0 || effective > 65535) return nil;
@@ -136,7 +137,7 @@ NSDictionary *FDMSitePolicyValidateEntry(id payload, NSError **error) {
         }
         result[key] = value;
     }
-    return result;
+    return [result copy];
 }
 
 NSDictionary *FDMSitePolicyEmptyDocument(void) {
@@ -167,6 +168,10 @@ NSDictionary *FDMSitePolicyValidateDocument(id payload, NSError **error) {
     if (origins.count > FDMPolicyMaxOrigins) { if (error) *error = FDMPolicyError(@"站点规则数量超出上限"); return nil; }
     NSMutableDictionary *normalized = [NSMutableDictionary dictionary];
     for (NSString *rawKey in origins) {
+        NSURLComponents *parts = [NSURLComponents componentsWithString:rawKey];
+        if (!parts || (parts.path.length && ![parts.path isEqual:@"/"]) || parts.query.length || parts.fragment.length) {
+            if (error) *error = FDMPolicyError(@"站点规则键必须是origin，不能包含路径、查询或片段"); return nil;
+        }
         NSString *origin = FDMNormalizedOrigin(rawKey);
         if (!origin) { if (error) *error = FDMPolicyError([NSString stringWithFormat:@"站点 origin 无效：%@", rawKey]); return nil; }
         if (normalized[origin]) {
@@ -195,12 +200,21 @@ NSDictionary *FDMPolicyGlobalBaseline(void) {
         id value = ((id (*)(id, SEL))objc_msgSend)(manager, current);
         if ([value isKindOfClass:NSString.class] && [value length]) agent = value;
     }
-    return @{FDMPolicyUserAgent: agent ?: NSNull.null};
+    id preference = nil;
+    Class preferences = NSClassFromString(@"PreferenceManager");
+    if ([preferences respondsToSelector:shared]) {
+        id owner = ((id (*)(id, SEL))objc_msgSend)(preferences, shared); preference = FDMValue(owner, @"items");
+    }
+    return @{FDMPolicyUserAgent: agent ?: NSNull.null,
+        FDMPolicyReader: [FDMValue(preference, @"enabledReader") boolValue] ? @"auto" : @"off",
+        FDMPolicyContentBlocking: [FDMValue(preference, @"enabledAdblock") boolValue] ? @"on" : @"off",
+        FDMPolicyPageJavaScript: @"on", FDMPolicyUserScripts: @"on", FDMPolicyExternalApps: @"ask",
+        FDMPolicyCamera: @"ask", FDMPolicyMicrophone: @"ask"};
 }
 
 NSString *FDMPolicyEffectiveValue(NSDictionary *entry, NSString *field, NSDictionary *global) {
     id value = entry[field];
-    if (!value) value = global[field];
+    if (!value || value == NSNull.null) value = global[field];
     if (!value) return nil;
     if (value == NSNull.null) return nil;
     if ([value isKindOfClass:NSNumber.class]) return [value stringValue];
@@ -354,6 +368,20 @@ NSArray<NSString *> *FDMPolicyOverriddenFields(NSDictionary *entry) {
         ok = [self commitDocument:next error:&failure];
     });
     if (!ok && error) *error = failure;
+    return ok;
+}
+- (BOOL)restoreDocument:(NSDictionary *)document publish:(BOOL)publish error:(NSError **)error {
+    NSDictionary *validated = FDMSitePolicyValidateDocument(document, error);
+    if (!validated) return NO;
+    __block BOOL ok = NO; __block NSError *failure = nil;
+    dispatch_sync(_queue, ^{
+        if (![self persist:validated error:&failure]) return;
+        _document = [validated mutableCopy]; ok = YES;
+    });
+    if (!ok && error) *error = failure;
+    if (ok && publish) dispatch_async(dispatch_get_main_queue(), ^{
+        [NSNotificationCenter.defaultCenter postNotificationName:FDMSitePolicyDidChangeNotification object:nil];
+    });
     return ok;
 }
 @end

@@ -23,3 +23,13 @@ Entries are workspace records, not authoritative runtime decisions.
 | 2026-11-08 | artifact | docs/aegis/work/2026-11-08-focus-v19-repairs/evidence-bundle-draft-whole-repair.json | 2026-11-08-focus-v19-repairs evidence whole-repair |
 | 2026-11-08 | artifact | docs/aegis/work/2026-11-08-focus-v19-repairs/gate-input-pack.json | 2026-11-08-focus-v19-repairs gate input pack |
 | 2026-11-08 | work | docs/aegis/work/2026-11-08-focus-v19-repairs/proof-bundle.md | 2026-11-08-focus-v19-repairs proof bundle |
+| 2026-11-09 | work | docs/aegis/work/2026-11-09-focus-v20-plan-implementation/10-intent.md | Focus v20 三项功能实施与纠偏 intent |
+| 2026-11-09 | work | docs/aegis/work/2026-11-09-focus-v20-plan-implementation/20-checkpoint.md | Focus v20 三项功能实施与纠偏 checkpoint |
+| 2026-11-09 | work | docs/aegis/work/2026-11-09-focus-v20-plan-implementation/90-evidence.md | Focus v20 三项功能实施与纠偏 evidence |
+| 2026-11-09 | work | docs/aegis/work/2026-11-09-focus-v20-plan-implementation/99-reflection.md | Focus v20 三项功能实施与纠偏 reflection |
+| 2026-11-09 | artifact | docs/aegis/work/2026-11-09-focus-v20-plan-implementation/task-intent-draft.json | Focus v20 三项功能实施与纠偏 task intent draft |
+| 2026-11-09 | artifact | docs/aegis/work/2026-11-09-focus-v20-plan-implementation/baseline-read-set-hint.json | Focus v20 三项功能实施与纠偏 baseline read-set hint |
+| 2026-11-09 | artifact | docs/aegis/work/2026-11-09-focus-v20-plan-implementation/baseline-usage-draft.json | Focus v20 三项功能实施与纠偏 baseline usage draft |
+| 2026-11-09 | artifact | docs/aegis/work/2026-11-09-focus-v20-plan-implementation/impact-statement-draft.json | Focus v20 三项功能实施与纠偏 impact statement draft |
+| 2026-11-09 | artifact | docs/aegis/work/2026-11-09-focus-v20-plan-implementation/todo-checkpoint-draft.json | Focus v20 三项功能实施与纠偏 todo checkpoint draft |
+| 2026-11-09 | artifact | docs/aegis/work/2026-11-09-focus-v20-plan-implementation/drift-check-draft.json | Focus v20 三项功能实施与纠偏 drift check draft |

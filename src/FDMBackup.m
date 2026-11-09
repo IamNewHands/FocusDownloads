@@ -15,6 +15,7 @@ NSUInteger const FDMBackupMaxNameBytes = 512;
 NSUInteger const FDMBackupMaxURLBytes = 8192;
 
 NSString *const FDMBackupCategoryBookmarks = @"bookmarks";
+NSString *const FDMBackupCategoryHomeTags = @"homeShortcuts";
 NSString *const FDMBackupCategorySearch = @"searchConfiguration";
 NSString *const FDMBackupCategorySitePolicies = @"sitePolicies";
 NSString *const FDMBackupCategoryPreferences = @"allowedPreferences";
@@ -24,14 +25,15 @@ NSArray<NSString *> *FDMBackupCategoryOrder(void) {
     static NSArray *order;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        order = @[FDMBackupCategoryBookmarks, FDMBackupCategorySearch, FDMBackupCategorySitePolicies,
-                  FDMBackupCategoryPreferences, FDMBackupCategoryScripts];
+        order = @[FDMBackupCategoryBookmarks, FDMBackupCategoryHomeTags, FDMBackupCategorySearch,
+                  FDMBackupCategorySitePolicies, FDMBackupCategoryPreferences, FDMBackupCategoryScripts];
     });
     return order;
 }
 
 NSString *FDMBackupCategoryTitle(NSString *category) {
-    NSDictionary *titles = @{FDMBackupCategoryBookmarks: @"书签与主页快捷项",
+    NSDictionary *titles = @{FDMBackupCategoryBookmarks: @"书签",
+                             FDMBackupCategoryHomeTags: @"主页快捷项",
                              FDMBackupCategorySearch: @"搜索配置",
                              FDMBackupCategorySitePolicies: @"站点策略",
                              FDMBackupCategoryPreferences: @"允许的偏好设置",

@@ -1,11 +1,11 @@
 #import "FDMCommon.h"
 
 NS_ASSUME_NONNULL_BEGIN
+FOUNDATION_EXPORT BOOL FDMRequestCanUseAnonymousBackground(NSURLRequest *request);
+FOUNDATION_EXPORT NSString *FDMDownloadPublicURL(NSURL * _Nullable url);
+FOUNDATION_EXPORT NSError * _Nullable FDMRedirectRefusal(NSURLRequest *original, NSURLRequest *redirect);
 
-FOUNDATION_EXPORT NSString *FDMTransportName(FDMTransportKind kind);
-
-// Immutable description of one user download intent. Secret material (cookies, auth headers,
-// request bodies) lives only in the in-memory FDMIntentRegistry and never in this DTO.
+// Immutable intent; url is a public origin display, never the replay recipe.
 @interface FDMDownloadIntent : NSObject
 @property (nonatomic, readonly, copy) NSString *intentID;
 @property (nonatomic, readonly, copy) NSString *tabID;
@@ -22,45 +22,26 @@ FOUNDATION_EXPORT NSString *FDMTransportName(FDMTransportKind kind);
 @property (nonatomic, readonly) NSTimeInterval captureTime;
 @property (nonatomic, readonly) unsigned long long policyRevision;
 @property (nonatomic, readonly) FDMTransportKind transport;
-// Why this intent cannot use the preferred transport, or nil when it can.
+@property (nonatomic, readonly) BOOL persistentContext;
 @property (nonatomic, readonly, copy, nullable) NSString *transportRefusal;
+- (instancetype)initWithRequest:(NSURLRequest *)request tabID:(NSString *)tabID
+    generation:(unsigned long long)generation sourceOrigin:(nullable NSString *)sourceOrigin
+    transport:(FDMTransportKind)transport dataStore:(nullable id)dataStore
+    userInitiated:(BOOL)userInitiated policyRevision:(unsigned long long)policyRevision;
+- (instancetype)init NS_UNAVAILABLE;
 @end
 
-// Process-local store for the secret half of an intent. Entries are bound to intentID + attempt
-// and are dropped when the owning tab navigates, closes, or the app is backgrounded for long.
+// Only unclaimed navigation intent belongs here. Once adopted, the transport owns a copied recipe.
 @interface FDMIntentRegistry : NSObject
 + (instancetype)shared;
-- (void)registerRequest:(NSURLRequest *)request
-                tabID:(NSString *)tabID
-   navigationGeneration:(unsigned long long)generation
-           sourceOrigin:(NSString *)sourceOrigin
-        suggestedFilename:(nullable NSString *)filename
-              dataStore:(nullable id)dataStore
-           userInitiated:(BOOL)userInitiated;
-// The most recent intent whose URL matches, or nil. Never invents a request context.
-- (nullable FDMDownloadIntent *)takeIntentMatchingURL:(NSURL *)url;
+- (FDMDownloadIntent *)registerRequest:(NSURLRequest *)request tabID:(NSString *)tabID
+    navigationGeneration:(unsigned long long)generation sourceOrigin:(nullable NSString *)sourceOrigin
+    suggestedFilename:(nullable NSString *)filename dataStore:(nullable id)dataStore userInitiated:(BOOL)userInitiated;
+- (nullable FDMDownloadIntent *)intentForTabID:(NSString *)tabID generation:(unsigned long long)generation;
 - (nullable NSURLRequest *)requestForIntent:(NSString *)intentID;
-// Cookies for the intent's own data store only, restricted to hosts the target accepts.
-- (void)cookiesForIntent:(NSString *)intentID completion:(void (^)(NSArray<NSHTTPCookie *> *cookies))completion;
+- (BOOL)claimIntent:(NSString *)intentID tabID:(NSString *)tabID generation:(unsigned long long)generation;
 - (void)invalidateTab:(NSString *)tabID;
 - (void)invalidateAll;
 - (NSUInteger)count;
 @end
-
-// Redirect policy for credentialed transports. Returns nil when the redirect may proceed.
-FOUNDATION_EXPORT NSError * _Nullable FDMRedirectRefusal(NSURLRequest *original, NSURLRequest *redirect);
-// A header name whose value must never reach a log or a persisted record.
-FOUNDATION_EXPORT BOOL FDMIsSecretHeader(NSString *name);
-FOUNDATION_EXPORT NSString *FDMRedactedHeaderNames(NSDictionary<NSString *, NSString *> *headers);
-
-// Credentialed GET download. One ephemeral session per intent; no cookie sharing with the host.
-@interface FDMCredentialedTransport : NSObject
-- (instancetype)initWithIntent:(nullable FDMDownloadIntent *)intent
-                       request:(NSURLRequest *)request
-                         queue:(dispatch_queue_t)queue;
-- (void)startWithProgress:(void (^)(int64_t received, int64_t total))progress
-               completion:(void (^)(NSURL * _Nullable location, NSHTTPURLResponse * _Nullable response, NSError * _Nullable error))completion;
-- (void)cancel;
-@end
-
 NS_ASSUME_NONNULL_END
