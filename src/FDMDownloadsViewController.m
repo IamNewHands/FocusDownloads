@@ -231,6 +231,12 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     UISearchController *_search;
     NSString *_query;
     NSInteger _filter;
+    BOOL _refreshReady;
+    BOOL _refreshScheduled;
+    BOOL _refreshPending;
+    BOOL _refreshing;
+    BOOL _scrolling;
+    NSUInteger _refreshGeneration;
 }
 
 - (void)viewDidLoad {
@@ -238,12 +244,22 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     self.title = @"下载管理";
     _active = @[];
     _finished = @[];
+    self.tableView.backgroundColor = UIColor.systemGroupedBackgroundColor;
+    UINavigationBarAppearance *appearance = [[UINavigationBarAppearance alloc] init];
+    [appearance configureWithOpaqueBackground];
+    appearance.backgroundColor = UIColor.systemBackgroundColor;
+    self.navigationItem.standardAppearance = appearance;
+    self.navigationItem.scrollEdgeAppearance = appearance;
+    self.navigationItem.compactAppearance = appearance;
+    if (@available(iOS 15.0, *)) self.navigationItem.compactScrollEdgeAppearance = appearance;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 116;
     [self.tableView registerClass:FDMDownloadCell.class forCellReuseIdentifier:@"download"];
     _addButton = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd target:self action:@selector(addDownload)];
     _addButton.accessibilityLabel = @"新增下载";
     _allButton = [[UIBarButtonItem alloc] initWithTitle:@"全部暂停" style:UIBarButtonItemStylePlain target:self action:@selector(toggleAll)];
+    _addButton.enabled = NO;
+    _allButton.enabled = NO;
     UIBarButtonItem *more = [[UIBarButtonItem alloc] initWithTitle:@"更多" style:UIBarButtonItemStylePlain target:self action:@selector(showMore)];
     self.navigationItem.rightBarButtonItems = @[_addButton, _allButton, more];
     _filter = -1;
@@ -264,7 +280,6 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     _restoringLabel.adjustsFontForContentSizeCategory = YES;
     _restoringLabel.textAlignment = NSTextAlignmentCenter;
     _restoringLabel.numberOfLines = 0;
-    [self refresh];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -272,11 +287,17 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     UINavigationController *navigation = self.navigationController;
     if (!_navSaved && navigation) { _navWasHidden = navigation.navigationBarHidden; _navSaved = YES; }
     [navigation setNavigationBarHidden:NO animated:animated];
+}
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    _refreshReady = YES;
+    _scrolling = NO;
     [self startObserving];
     [self refresh];
 }
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
+    [self stopObserving];
     if (_navSaved && (self.isMovingFromParentViewController || self.isBeingDismissed || self.navigationController.isBeingDismissed)) [self.navigationController setNavigationBarHidden:_navWasHidden animated:animated];
 }
 - (void)viewDidDisappear:(BOOL)animated { [super viewDidDisappear:animated]; [self stopObserving]; }
@@ -286,7 +307,7 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     if (_timer) return;
     __weak typeof(self) weakSelf = self;
     _timer = [NSTimer timerWithTimeInterval:1 repeats:YES block:^(NSTimer *timer) { [weakSelf refresh]; }];
-    [NSRunLoop.mainRunLoop addTimer:_timer forMode:NSRunLoopCommonModes];
+    [NSRunLoop.mainRunLoop addTimer:_timer forMode:NSDefaultRunLoopMode];
     _observers = [NSMutableArray array];
     for (NSString *name in @[FDMRecordsDidChangeNotification, UIApplicationDidBecomeActiveNotification, UIContentSizeCategoryDidChangeNotification]) {
         id token = [NSNotificationCenter.defaultCenter addObserverForName:name object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) { [weakSelf refresh]; }];
@@ -294,17 +315,31 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     }
 }
 - (void)stopObserving {
+    _refreshReady = NO;
+    _refreshScheduled = NO;
+    _refreshGeneration++;
     [_timer invalidate];
     _timer = nil;
     for (id token in _observers) [NSNotificationCenter.defaultCenter removeObserver:token];
     [_observers removeAllObjects];
+}
+- (void)scrollViewWillBeginDragging:(UIScrollView *)scrollView { _scrolling = YES; }
+- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate {
+    if (!decelerate) { _scrolling = NO; if (_refreshPending) [self refresh]; }
+}
+- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView {
+    _scrolling = NO;
+    if (_refreshPending) [self refresh];
 }
 
 - (NSDictionary *)displayRow:(NSDictionary *)record adapter:(NSString *)adapter live:(BOOL)live {
     NSMutableDictionary *row = [record mutableCopy];
     row[@"adapter"] = adapter;
     row[@"live"] = @(live);
-    BOOL resumable = [FDMEngine.shared canResumeKey:row[@"key"]];
+    BOOL resumable = NO;
+    if ([row[@"state"] integerValue] != FDMStateCompleted && ![adapter isEqual:@"host"]) {
+        resumable = live && [adapter isEqual:@"engine"] ? [record[@"canResume"] boolValue] : [FDMEngine.shared canResumeKey:row[@"key"]];
+    }
     if ([adapter isEqual:@"legacy"] && resumable && [row[@"state"] integerValue] != FDMStateCompleted) { adapter = @"engine"; row[@"adapter"] = adapter; }
     row[@"canResume"] = @([adapter isEqual:@"engine"] && resumable);
     if (!live && [row[@"state"] integerValue] == FDMStateDownloading) {
@@ -316,24 +351,48 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     return row;
 }
 - (void)refresh {
-    if (!self.isViewLoaded) return;
+    if (!self.isViewLoaded || _refreshing) return;
+    _refreshPending = YES;
+    if (!_refreshReady || _refreshScheduled || _scrolling) return;
+    _refreshScheduled = YES;
+    NSUInteger generation = _refreshGeneration;
+    __weak typeof(self) weakSelf = self;
+    // Default-mode work waits for scrolling; one snapshot absorbs synchronous store notifications.
+    CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopDefaultMode, ^{
+        typeof(self) self = weakSelf;
+        if (!self || self->_refreshGeneration != generation) return;
+        self->_refreshScheduled = NO;
+        if (!self->_refreshReady || self->_scrolling) return;
+        self->_refreshPending = NO;
+        self->_refreshing = YES;
+        @try { [self refreshSnapshot]; }
+        @finally { self->_refreshing = NO; }
+    });
+    CFRunLoopWakeUp(CFRunLoopGetMain());
+}
+- (void)refreshSnapshot {
     [FDMHostDownloads.shared refresh];
+    NSArray *history = [FDMStore.shared records];
+    NSMutableDictionary<NSString *, NSDictionary *> *historyByKey = [NSMutableDictionary dictionaryWithCapacity:history.count];
+    for (NSDictionary *record in history) {
+        NSString *key = FDMString(record[@"key"]);
+        if (key.length) historyByKey[key] = record;
+    }
     NSMutableDictionary<NSString *, NSDictionary *> *byKey = [NSMutableDictionary dictionary];
     NSMutableSet<NSString *> *legacyAliases = [NSMutableSet set];
     for (NSDictionary *record in [FDMEngine.shared items]) {
         NSString *key = FDMString(record[@"key"]);
         NSString *legacy = FDMString(record[@"legacyKey"]);
-        if (FDMLegacyAliasMatches(record, [FDMStore.shared recordForKey:legacy])) [legacyAliases addObject:legacy];
+        if (FDMLegacyAliasMatches(record, legacy ? historyByKey[legacy] : nil)) [legacyAliases addObject:legacy];
         if (key.length && ![FDMEngine.shared isRemovedKey:key]) byKey[key] = [self displayRow:record adapter:@"engine" live:YES];
     }
     for (NSDictionary *record in [FDMHostDownloads.shared rows]) {
         NSString *key = FDMString(record[@"key"]);
         if (key.length && ![FDMHostDownloads.shared isSuppressedKey:key] && !byKey[key]) byKey[key] = [self displayRow:record adapter:@"host" live:YES];
     }
-    NSArray *history = [FDMStore.shared records];
     for (NSDictionary *record in history) {
         NSString *legacy = FDMString(record[@"legacyKey"]);
-        if ([record[@"schema"] integerValue] == 2 && FDMLegacyAliasMatches(record, [FDMStore.shared recordForKey:legacy])) [legacyAliases addObject:legacy];
+        if ([record[@"schema"] integerValue] == 2 && FDMLegacyAliasMatches(record, legacy ? historyByKey[legacy] : nil)) [legacyAliases addObject:legacy];
     }
     for (NSDictionary *record in history) {
         NSString *key = FDMString(record[@"key"]);
@@ -373,8 +432,8 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     if (restoring) {
         _restoringLabel.text = @"正在恢复系统下载任务，请稍后操作";
         _restoringLabel.frame = CGRectMake(0, 0, self.tableView.bounds.size.width, 60);
-        self.tableView.tableHeaderView = _restoringLabel;
-    } else self.tableView.tableHeaderView = nil;
+        if (self.tableView.tableHeaderView != _restoringLabel) self.tableView.tableHeaderView = _restoringLabel;
+    } else if (self.tableView.tableHeaderView) self.tableView.tableHeaderView = nil;
 }
 
 // Scope index 0 is 全部 and -1 means no scope selected; both accept every row.

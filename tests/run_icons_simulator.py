@@ -53,12 +53,11 @@ def main():
                "-fobjc-arc", "-fblocks", "-DFDM_TESTING=1", "-Wall", "-Wextra", "-Isrc",
                "-mios-simulator-version-min=14.0", "-framework", "UIKit", "-framework", "Foundation",
                "-framework", "QuartzCore", "-framework", "CoreGraphics", "-framework", "ImageIO", "-framework", "QuickLook",
-               "-framework", "WebKit", "-framework", "Security",
-               "src/FDMCommon.m", "src/FDMStore.m", "src/FDMJSON.m", "src/FDMPolicy.m", "src/FDMIntent.m", "src/FDMVault.m",
-               "src/FDMEngine.m", "src/FDMHostDownloads.m",
-               "src/FDMDownloadsViewController.m", "src/FDMIcons.m", "src/FDMIconDiagnostics.m",
-               "tests/icons_regression.m", "tests/forms_regression.m",
-               "tests/icons_app_main.m", "-o", str(output / "IconRegression")]
+               "-framework", "WebKit", "-framework", "Security", "-lsqlite3"]
+    command.extend(str(path.relative_to(root)) for path in sorted((root / "src").glob("*.m")))
+    command.extend(["tests/icons_regression.m", "tests/forms_regression.m",
+                    "tests/settings_regression.m", "tests/download_ui_regression.m",
+                    "tests/icons_app_main.m", "-o", str(output / "IconRegression")])
     run(command)
     run(["codesign", "--force", "--sign", "-", str(output)])
     try:

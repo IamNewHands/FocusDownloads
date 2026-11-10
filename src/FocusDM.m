@@ -17,6 +17,7 @@ static NSString *const FDMDownloadsLink = @"focusdm://downloads";
 static NSString *const FDMSitePoliciesLink = @"focusdm://site-policies";
 static NSString *const FDMBackupLink = @"focusdm://backup";
 static IMP FDMOriginalSettingsAppear;
+static IMP FDMOriginalSettingsUpdate;
 static IMP FDMOriginalSettingsSelect;
 static IMP FDMOriginalPreferenceSelect;
 static IMP FDMOriginalPreferenceUpdate;
@@ -81,50 +82,103 @@ static NSString *FDMHeaderTitle(id header) {
     return [header isKindOfClass:NSString.class] ? header : FDMString(FDMValue(header, @"title"));
 }
 
-// Inserts one native SettingModel row into the section that contains the existing "进阶" header.
-// The row is rendered by the host's own cellForRowAtIndexPath:, so icon, insets and height match.
-static void FDMEnsureSettingsRow(UIViewController *controller, NSString *title, NSString *link) {
+static NSArray<NSDictionary *> *FDMSettingsEntries(void) {
+    return @[@{@"title": @"下载管理", @"link": FDMDownloadsLink},
+             @{@"title": @"网站规则", @"link": FDMSitePoliciesLink},
+             @{@"title": @"数据备份", @"link": FDMBackupLink}];
+}
+
+static BOOL FDMIsSettingsLink(NSString *link) {
+    return [link isEqual:FDMDownloadsLink] || [link isEqual:FDMSitePoliciesLink] || [link isEqual:FDMBackupLink];
+}
+
+static BOOL FDMSetSettingsValue(id row, NSString *key, id value) {
+    id old = FDMValue(row, key);
+    if (old == value || [old isEqual:value]) return NO;
+    [row setValue:value forKey:key];
+    return YES;
+}
+
+// Focus 2.9.7 renders type 0 as SettingVipCell and type 17 as RecommendCell.
+// A task-owned type takes its ordinary SettingCell branch without inheriting VIP behavior.
+static const int FDMSettingsRowType = 0x46444d;
+static void FDMEnsureSettingsRows(UIViewController *controller) {
     @try {
         id model = FDMValue(controller, @"model");
         id headers = FDMValue(controller, @"sectionHeaderModel");
         if (![model isKindOfClass:NSMutableArray.class]) return;
         NSMutableArray *sections = model;
-        for (NSArray *section in sections) {
-            if (![section isKindOfClass:NSArray.class]) continue;
-            for (id row in section) if ([FDMString(FDMValue(row, @"link")) isEqual:link]) return;
-        }
         NSInteger selected = -1;
+        NSString *advanced = [NSBundle.mainBundle localizedStringForKey:@"setting.advance.title" value:@"进阶功能" table:nil];
         if ([headers isKindOfClass:NSArray.class]) {
             for (NSUInteger index = 0; index < MIN(sections.count, [headers count]); index++) {
-                if ([FDMHeaderTitle(headers[index]) containsString:@"进阶"]) { selected = (NSInteger)index; break; }
+                NSString *title = FDMHeaderTitle(headers[index]);
+                if ([title isEqual:advanced] || [title containsString:@"进阶"]) { selected = (NSInteger)index; break; }
             }
         }
         if (selected < 0) {
-            for (NSInteger index = (NSInteger)sections.count - 1; index >= 0; index--) {
-                if ([sections[index] isKindOfClass:NSArray.class] && [sections[index] count]) { selected = index; break; }
+            for (NSUInteger index = 0; index < sections.count && selected < 0; index++) {
+                if (![sections[index] isKindOfClass:NSArray.class]) continue;
+                for (id row in sections[index]) {
+                    NSInteger type = [FDMValue(row, @"type") integerValue];
+                    if (type > 0 && type != 17 && !FDMIsSettingsLink(FDMString(FDMValue(row, @"link")))) {
+                        selected = (NSInteger)index; break;
+                    }
+                }
             }
         }
-        if (selected < 0) return;
-        NSMutableArray *rows = [sections[selected] mutableCopy];
+        if (selected < 0 || ![sections[selected] isKindOfClass:NSArray.class]) return;
         Class modelClass = NSClassFromString(@"SettingModel");
         if (!modelClass) return;
-        id row = [[modelClass alloc] init];
         id template = nil;
-        for (id candidate in rows.reverseObjectEnumerator) if (FDMString(FDMValue(candidate, @"link")).length) { template = candidate; break; }
-        [row setValue:title forKey:@"title"];
-        [row setValue:link forKey:@"link"];
-        for (NSString *key in @[@"imageName", @"imageBackgroundColor", @"type"]) {
-            id value = FDMValue(template, key);
-            if (value) [row setValue:value forKey:key];
+        for (id candidate in [sections[selected] reverseObjectEnumerator]) {
+            NSInteger type = [FDMValue(candidate, @"type") integerValue];
+            if (type > 0 && type != 17 && !FDMIsSettingsLink(FDMString(FDMValue(candidate, @"link")))) {
+                template = candidate; break;
+            }
         }
-        [row setValue:@YES forKey:@"isLastInSection"];
-        id last = rows.lastObject;
-        if (last) [last setValue:@NO forKey:@"isLastInSection"];
-        [rows addObject:row];
-        sections[selected] = rows;
+        BOOL changed = NO;
+        NSMutableArray *updated = [NSMutableArray arrayWithCapacity:sections.count];
+        NSMutableDictionary *existing = [NSMutableDictionary dictionary];
+        for (id section in sections) {
+            if (![section isKindOfClass:NSArray.class]) { [updated addObject:section]; continue; }
+            NSMutableArray *rows = [NSMutableArray array];
+            for (id row in section) {
+                NSString *link = FDMString(FDMValue(row, @"link"));
+                if (FDMIsSettingsLink(link)) {
+                    if (!existing[link]) existing[link] = row;
+                } else [rows addObject:row];
+            }
+            [updated addObject:rows];
+        }
+        NSMutableArray *rows = updated[selected];
+        for (NSDictionary *entry in FDMSettingsEntries()) {
+            id row = existing[entry[@"link"]] ?: [[modelClass alloc] init];
+            changed |= FDMSetSettingsValue(row, @"title", entry[@"title"]);
+            changed |= FDMSetSettingsValue(row, @"link", entry[@"link"]);
+            changed |= FDMSetSettingsValue(row, @"type", @(FDMSettingsRowType));
+            changed |= FDMSetSettingsValue(row, @"content", nil);
+            for (NSString *key in @[@"imageName", @"imageBackgroundColor"]) {
+                id value = FDMValue(template, key);
+                if (value) changed |= FDMSetSettingsValue(row, key, value);
+            }
+            [rows addObject:row];
+        }
+        for (NSUInteger index = 0; index < sections.count; index++) {
+            id original = sections[index], replacement = updated[index];
+            if (![replacement isKindOfClass:NSArray.class]) continue;
+            BOOL different = ![original isEqual:replacement];
+            if (different || index == (NSUInteger)selected) {
+                for (NSUInteger rowIndex = 0; rowIndex < [replacement count]; rowIndex++) {
+                    changed |= FDMSetSettingsValue(replacement[rowIndex], @"isFirstInSection", @(rowIndex == 0));
+                    changed |= FDMSetSettingsValue(replacement[rowIndex], @"isLastInSection", @(rowIndex + 1 == [replacement count]));
+                }
+            }
+            if (different) { sections[index] = replacement; changed = YES; }
+        }
         UITableView *table = FDMValue(controller, @"tableView");
-        if ([table isKindOfClass:UITableView.class]) [table reloadData];
-    } @catch (NSException *exception) { FDMLog(@"settings row failed %@", exception.reason); }
+        if (changed && [table isKindOfClass:UITableView.class]) [table reloadData];
+    } @catch (NSException *exception) { FDMLog(@"settings rows failed %@", exception.reason); }
 }
 
 static UIViewController *FDMPageForLink(NSString *link) {
@@ -136,9 +190,12 @@ static UIViewController *FDMPageForLink(NSString *link) {
 
 static void FDMSettingsAppear(id self, SEL selector, BOOL animated) {
     if (FDMOriginalSettingsAppear) ((void (*)(id, SEL, BOOL))FDMOriginalSettingsAppear)(self, selector, animated);
-    FDMEnsureSettingsRow(self, @"下载管理", FDMDownloadsLink);
-    FDMEnsureSettingsRow(self, @"网站规则", FDMSitePoliciesLink);
-    FDMEnsureSettingsRow(self, @"数据备份", FDMBackupLink);
+    FDMEnsureSettingsRows(self);
+}
+
+static void FDMSettingsUpdate(id self, SEL selector) {
+    if (FDMOriginalSettingsUpdate) ((void (*)(id, SEL))FDMOriginalSettingsUpdate)(self, selector);
+    FDMEnsureSettingsRows(self);
 }
 
 static void FDMSettingsSelect(id self, SEL selector, UITableView *table, NSIndexPath *path) {
@@ -277,6 +334,7 @@ static void FDMDidEnterBackground(id self, SEL selector, UIApplication *applicat
 static void FDMInstallHostHooks(void) {
     Class settings = NSClassFromString(@"SettingViewController");
     FDMInstallHook(settings, @selector(viewWillAppear:), (IMP)FDMSettingsAppear, &FDMOriginalSettingsAppear);
+    FDMInstallHook(settings, NSSelectorFromString(@"updateWithModel"), (IMP)FDMSettingsUpdate, &FDMOriginalSettingsUpdate);
     FDMInstallHook(settings, @selector(tableView:didSelectRowAtIndexPath:), (IMP)FDMSettingsSelect, &FDMOriginalSettingsSelect);
     FDMInstallHook(NSClassFromString(@"BrowserViewController"), NSSelectorFromString(@"preferenceViewDidSelectItem:"), (IMP)FDMPreferenceSelect, &FDMOriginalPreferenceSelect);
     FDMInstallHook(NSClassFromString(@"PreferenceItemCell"), NSSelectorFromString(@"updateWithModel:"), (IMP)FDMPreferenceUpdate, &FDMOriginalPreferenceUpdate);
@@ -286,6 +344,14 @@ static void FDMInstallHostHooks(void) {
     FDMInstallNavigationHooks();
 }
 
+#if defined(FDM_TESTING)
+void FDMTestInstallSettingsHooks(void) {
+    Class settings = NSClassFromString(@"SettingViewController");
+    FDMInstallHook(settings, @selector(viewWillAppear:), (IMP)FDMSettingsAppear, &FDMOriginalSettingsAppear);
+    FDMInstallHook(settings, NSSelectorFromString(@"updateWithModel"), (IMP)FDMSettingsUpdate, &FDMOriginalSettingsUpdate);
+    FDMInstallHook(settings, @selector(tableView:didSelectRowAtIndexPath:), (IMP)FDMSettingsSelect, &FDMOriginalSettingsSelect);
+}
+#else
 __attribute__((constructor)) static void FDMInitialize(void) {
     @autoreleasepool {
         FDMInstallCrashHandlers();
@@ -297,3 +363,4 @@ __attribute__((constructor)) static void FDMInitialize(void) {
         FDMInstallHook(delegate, @selector(applicationDidEnterBackground:), (IMP)FDMDidEnterBackground, &FDMOriginalDidEnterBackground);
     }
 }
+#endif
