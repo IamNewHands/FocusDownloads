@@ -12,6 +12,7 @@
 #import "FDMNativePages.h"
 #import "FDMNavigation.h"
 #import "FDMPageImages.h"
+#import "FDMPageNavigation.h"
 
 static NSString *const FDMDownloadsLink = @"focusdm://downloads";
 static NSString *const FDMSitePoliciesLink = @"focusdm://site-policies";
@@ -22,6 +23,8 @@ static IMP FDMOriginalSettingsSelect;
 static IMP FDMOriginalPreferenceSelect;
 static IMP FDMOriginalPreferenceUpdate;
 static IMP FDMOriginalNavigationState;
+static IMP FDMOriginalNavigationWillShow;
+static IMP FDMOriginalNavigationDidShow;
 static IMP FDMOriginalHostDownload;
 static IMP FDMOriginalDidFinishLaunch;
 static IMP FDMOriginalBackgroundEvents;
@@ -69,14 +72,7 @@ static void FDMOpenDownloads(UIViewController *host) {
 }
 
 static void FDMOpenPage(UIViewController *host, UIViewController *page) {
-    if (!host || !page) return;
-    if (host.navigationController.transitionCoordinator) return;
-    if (host.navigationController) [host.navigationController pushViewController:page animated:YES];
-    else {
-        UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:page];
-        navigation.modalPresentationStyle = UIModalPresentationFullScreen;
-        [host presentViewController:navigation animated:YES completion:nil];
-    }
+    FDMShowOwnedPage(host, page);
 }
 static NSString *FDMHeaderTitle(id header) {
     return [header isKindOfClass:NSString.class] ? header : FDMString(FDMValue(header, @"title"));
@@ -221,20 +217,14 @@ static NSInteger FDMPreferenceType(id model) {
 
 static void FDMPreferenceSelect(id self, SEL selector, id model) {
     if (FDMPreferenceType(model) == 0x464449) {
-        SEL hide = NSSelectorFromString(@"hideUserPreferenceView");
-        if ([self respondsToSelector:hide]) ((void (*)(id, SEL))objc_msgSend)(self, hide);
-        FDMOpenPageImages(self); return;
+        FDMClosePreferenceThenPerform(self, ^(UIViewController *host) { FDMOpenPageImages(host); }); return;
     }
     if (FDMPreferenceType(model) == 0x46444d) {
-        SEL hide = NSSelectorFromString(@"hideUserPreferenceView");
-        if ([self respondsToSelector:hide]) ((void (*)(id, SEL))objc_msgSend)(self, hide);
-        FDMOpenCurrentSiteSettings(self);
+        FDMClosePreferenceThenPerform(self, ^(UIViewController *host) { FDMOpenCurrentSiteSettings(host); });
         return;
     }
     if (FDMPreferenceType(model) == 17) {
-        SEL hide = NSSelectorFromString(@"hideUserPreferenceView");
-        if ([self respondsToSelector:hide]) ((void (*)(id, SEL))objc_msgSend)(self, hide);
-        FDMOpenDownloads(self);
+        FDMClosePreferenceThenPerform(self, ^(UIViewController *host) { FDMOpenDownloads(host); });
     } else if (FDMOriginalPreferenceSelect) ((void (*)(id, SEL, id))FDMOriginalPreferenceSelect)(self, selector, model);
 }
 
@@ -250,12 +240,25 @@ static void FDMPreferenceUpdate(id self, SEL selector, id model) {
 
 static void FDMNavigationState(id self, SEL selector, UIViewController *controller, BOOL animated) {
     // Only task-owned pages are exempt. Every host and third-party controller keeps the host contract.
-    if ([controller isKindOfClass:FDMDownloadsViewController.class] ||
-        [controller isKindOfClass:FDMSitePoliciesViewController.class] ||
-        [controller isKindOfClass:FDMSitePolicyEditViewController.class] ||
-        [controller isKindOfClass:FDMBackupViewController.class] ||
-        [NSStringFromClass(controller.class) isEqual:@"FDMIconDiagnosticsViewController"]) return;
+    if (FDMIsOwnedNavigationPage(self, controller)) { FDMApplyOwnedNavigationState(self, controller, animated); return; }
     if (FDMOriginalNavigationState) ((void (*)(id, SEL, id, BOOL))FDMOriginalNavigationState)(self, selector, controller, animated);
+}
+
+static void FDMNavigationWillShow(id self, SEL selector, UINavigationController *navigation, UIViewController *controller, BOOL animated) {
+    if (FDMOriginalNavigationWillShow) ((void (*)(id, SEL, id, id, BOOL))FDMOriginalNavigationWillShow)(self, selector, navigation, controller, animated);
+    __weak UINavigationController *weakNavigation = navigation;
+    [navigation.transitionCoordinator animateAlongsideTransition:nil completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+        if (!context.isCancelled) return;
+        UINavigationController *current = weakNavigation;
+        if (!current) return;
+        FDMFinishOwnedNavigationTransition(current, current.topViewController);
+        FDMNavigationState(current, NSSelectorFromString(@"applyNavigationBarStateForViewController:animated:"), current.topViewController, NO);
+    }];
+}
+
+static void FDMNavigationDidShow(id self, SEL selector, UINavigationController *navigation, UIViewController *controller, BOOL animated) {
+    FDMFinishOwnedNavigationTransition(navigation, controller);
+    if (FDMOriginalNavigationDidShow) ((void (*)(id, SEL, id, id, BOOL))FDMOriginalNavigationDidShow)(self, selector, navigation, controller, animated);
 }
 
 static void FDMShowDownloadPill(void) {
@@ -339,6 +342,9 @@ static void FDMInstallHostHooks(void) {
     FDMInstallHook(NSClassFromString(@"BrowserViewController"), NSSelectorFromString(@"preferenceViewDidSelectItem:"), (IMP)FDMPreferenceSelect, &FDMOriginalPreferenceSelect);
     FDMInstallHook(NSClassFromString(@"PreferenceItemCell"), NSSelectorFromString(@"updateWithModel:"), (IMP)FDMPreferenceUpdate, &FDMOriginalPreferenceUpdate);
     FDMInstallHook(NSClassFromString(@"BaseNavigationController"), NSSelectorFromString(@"applyNavigationBarStateForViewController:animated:"), (IMP)FDMNavigationState, &FDMOriginalNavigationState);
+    FDMInstallHook(NSClassFromString(@"BaseNavigationController"), @selector(navigationController:willShowViewController:animated:), (IMP)FDMNavigationWillShow, &FDMOriginalNavigationWillShow);
+    FDMInstallHook(NSClassFromString(@"BaseNavigationController"), @selector(navigationController:didShowViewController:animated:), (IMP)FDMNavigationDidShow, &FDMOriginalNavigationDidShow);
+    FDMInstallPreferenceClosingHooks();
     FDMInstallHook(NSClassFromString(@"FileManager"), NSSelectorFromString(@"downloadWithUrl:title:"), (IMP)FDMHostDownload, &FDMOriginalHostDownload);
     FDMInstallNavigationCreatedCallback(^{ FDMShowDownloadPill(); });
     FDMInstallNavigationHooks();
@@ -350,6 +356,13 @@ void FDMTestInstallSettingsHooks(void) {
     FDMInstallHook(settings, @selector(viewWillAppear:), (IMP)FDMSettingsAppear, &FDMOriginalSettingsAppear);
     FDMInstallHook(settings, NSSelectorFromString(@"updateWithModel"), (IMP)FDMSettingsUpdate, &FDMOriginalSettingsUpdate);
     FDMInstallHook(settings, @selector(tableView:didSelectRowAtIndexPath:), (IMP)FDMSettingsSelect, &FDMOriginalSettingsSelect);
+}
+void FDMTestInstallPageNavigationHooks(void) {
+    Class navigation = NSClassFromString(@"BaseNavigationController");
+    FDMInstallHook(navigation, NSSelectorFromString(@"applyNavigationBarStateForViewController:animated:"), (IMP)FDMNavigationState, &FDMOriginalNavigationState);
+    FDMInstallHook(navigation, @selector(navigationController:willShowViewController:animated:), (IMP)FDMNavigationWillShow, &FDMOriginalNavigationWillShow);
+    FDMInstallHook(navigation, @selector(navigationController:didShowViewController:animated:), (IMP)FDMNavigationDidShow, &FDMOriginalNavigationDidShow);
+    FDMInstallPreferenceClosingHooks();
 }
 #else
 __attribute__((constructor)) static void FDMInitialize(void) {

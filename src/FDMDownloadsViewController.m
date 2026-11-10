@@ -2,6 +2,7 @@
 #import "FDMEngine.h"
 #import "FDMStore.h"
 #import "FDMHostDownloads.h"
+#import "FDMPageNavigation.h"
 #import <QuickLook/QuickLook.h>
 
 static NSString *FDMRowStateText(NSDictionary *row) {
@@ -122,6 +123,7 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     [super viewDidLoad];
     self.title = @"新增下载";
     self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
+    FDMPrepareOwnedPage(self);
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"取消" style:UIBarButtonItemStylePlain target:self action:@selector(cancel)];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"下载" style:UIBarButtonItemStyleDone target:self action:@selector(submit)];
     UILabel *label = [[UILabel alloc] init];
@@ -225,8 +227,6 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     UIBarButtonItem *_addButton;
     UIBarButtonItem *_allButton;
     UILabel *_restoringLabel;
-    BOOL _navSaved;
-    BOOL _navWasHidden;
     NSURL *_previewURL;
     UISearchController *_search;
     NSString *_query;
@@ -245,13 +245,7 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     _active = @[];
     _finished = @[];
     self.tableView.backgroundColor = UIColor.systemGroupedBackgroundColor;
-    UINavigationBarAppearance *appearance = [[UINavigationBarAppearance alloc] init];
-    [appearance configureWithOpaqueBackground];
-    appearance.backgroundColor = UIColor.systemBackgroundColor;
-    self.navigationItem.standardAppearance = appearance;
-    self.navigationItem.scrollEdgeAppearance = appearance;
-    self.navigationItem.compactAppearance = appearance;
-    if (@available(iOS 15.0, *)) self.navigationItem.compactScrollEdgeAppearance = appearance;
+    FDMPrepareOwnedPage(self);
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 116;
     [self.tableView registerClass:FDMDownloadCell.class forCellReuseIdentifier:@"download"];
@@ -284,9 +278,8 @@ static NSString *FDMRowDetail(NSDictionary *row) {
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    UINavigationController *navigation = self.navigationController;
-    if (!_navSaved && navigation) { _navWasHidden = navigation.navigationBarHidden; _navSaved = YES; }
-    [navigation setNavigationBarHidden:NO animated:animated];
+    FDMPrepareOwnedPage(self);
+    [self.navigationController setNavigationBarHidden:NO animated:animated];
 }
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
@@ -298,7 +291,6 @@ static NSString *FDMRowDetail(NSDictionary *row) {
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
     [self stopObserving];
-    if (_navSaved && (self.isMovingFromParentViewController || self.isBeingDismissed || self.navigationController.isBeingDismissed)) [self.navigationController setNavigationBarHidden:_navWasHidden animated:animated];
 }
 - (void)viewDidDisappear:(BOOL)animated { [super viewDidDisappear:animated]; [self stopObserving]; }
 - (void)dealloc { [self stopObserving]; }

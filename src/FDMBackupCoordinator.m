@@ -7,6 +7,12 @@
 #import "FDMPolicy.h"
 
 static NSError *FDMBackupFailure(NSString *message) { return FDMError(message); }
+static NSError *FDMBackupExportFailure(NSString *category, NSString *stage, NSError *underlying) {
+    NSString *message = [NSString stringWithFormat:@"%@：%@未完成%@",
+        FDMBackupCategoryTitle(category), stage,
+        underlying.localizedDescription.length ? [@"，" stringByAppendingString:underlying.localizedDescription] : @""];
+    return FDMBackupFailure(message);
+}
 static const NSUInteger FDMJournalBudget = 64 * 1024 * 1024;
 
 @interface FDMBackupImportPlan ()
@@ -111,16 +117,23 @@ static NSDictionary *FDMReadJournalMap(NSDictionary *map, NSArray *categories, N
     BOOL ok = [self exclusiveCategories:categories block:^BOOL {
         for (NSString *category in categories) {
             id<FDMBackupRepository> repository = _repositories[category];
-            if (!repository || !repository.isAvailable) { failure = FDMBackupFailure(@"所选类别当前不可读取"); return NO; }
-            NSData *bytes = [repository exportSnapshotWithRevision:NULL error:&failure];
-            id valid = bytes ? [repository validateImportPayload:bytes error:&failure] : nil;
-            if (!valid) return NO;
+            if (!repository || !repository.isAvailable) { failure = FDMBackupExportFailure(category, @"读取", nil); return NO; }
+            NSData *bytes = nil; id valid = nil; NSError *categoryError = nil;
+            @try {
+                bytes = [repository exportSnapshotWithRevision:NULL error:&categoryError];
+                if (!bytes.length) { failure = FDMBackupExportFailure(category, @"读取", categoryError); return NO; }
+                valid = [repository validateImportPayload:bytes error:&categoryError];
+            } @catch (NSException *exception) {
+                // Do not include exception reasons: a host model can put private values there.
+                failure = FDMBackupExportFailure(category, bytes ? @"校验" : @"读取", nil); return NO;
+            }
+            if (!valid) { failure = FDMBackupExportFailure(category, @"校验", categoryError); return NO; }
             NSUInteger count = [category isEqual:FDMBackupCategorySitePolicies] ? [valid[@"origins"] count] : [valid count];
             [entries addObject:[FDMBackupCategory category:category payload:bytes itemCount:count]];
         }
         return YES;
     } error:&failure]; [_lock unlock];
-    if (!ok) { if (error) *error = failure; return nil; }
+    if (!ok) { if (error) *error = failure ?: FDMBackupFailure(@"导出读取未完成，未生成备份文件"); return nil; }
     return FDMBackupEncode(entries, FDMPatchVersion(), error);
 }
 - (FDMBackupContainer *)openBackupAtURL:(NSURL *)url error:(NSError **)error {

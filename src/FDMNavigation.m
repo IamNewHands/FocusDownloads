@@ -3,6 +3,7 @@
 #import "FDMEngine.h"
 #import "FDMWebKitDownloads.h"
 #import "FDMNativePages.h"
+#import "FDMPageNavigation.h"
 
 static char FDMNavBindingKey;
 static IMP FDMNavOriginalAction, FDMNavOriginalResponse, FDMNavOriginalRedirect, FDMNavOriginalFinish;
@@ -69,9 +70,7 @@ static UIViewController *FDMNavPresenter(UIViewController *host) {
     return presenter;
 }
 static void FDMNavPush(UIViewController *host, UIViewController *page) {
-    if (host.navigationController) [host.navigationController pushViewController:page animated:YES];
-    else { UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:page];
-        nav.modalPresentationStyle = UIModalPresentationFullScreen; [host presentViewController:nav animated:YES completion:nil]; }
+    FDMShowOwnedPage(host, page);
 }
 void FDMOpenCurrentSiteSettings(UIViewController *host) {
     id manager = FDMValue(host, @"tabManager");

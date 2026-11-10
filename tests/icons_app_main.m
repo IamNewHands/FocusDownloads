@@ -5,6 +5,7 @@ void FDMRunIconRegressionTests(void);
 void FDMRunFormRegressionTests(void);
 void FDMRunSettingsRegressionTests(void);
 void FDMRunDownloadUIRegressionTests(void);
+void FDMRunPageNavigationRegressionTests(void);
 
 @interface FDMRegressionAppDelegate : UIResponder <UIApplicationDelegate>
 @property (nonatomic, strong) UIWindow *window;
@@ -25,6 +26,7 @@ void FDMRunDownloadUIRegressionTests(void);
             FDMRunFormRegressionTests();
             FDMRunSettingsRegressionTests();
             FDMRunDownloadUIRegressionTests();
+            FDMRunPageNavigationRegressionTests();
             NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
             [@"PASS" writeToFile:[documents stringByAppendingPathComponent:@"regression-result.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
             NSLog(@"FocusDM simulator icon regression PASS");

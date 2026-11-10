@@ -59,6 +59,12 @@ static NSString *FDMRepoStringOrEmpty(id value) {
     return [value isKindOfClass:NSString.class] ? value : @"";
 }
 
+// Focus creates this container with only bookmarkId/parentId/title. It is host-owned,
+// not a portable bookmark, and must survive a replace or rollback unchanged.
+static BOOL FDMBackupBookmarkIsRoot(NSString *identifier) {
+    return [identifier isEqual:@"root"];
+}
+
 #pragma mark - shared tree validation
 
 // Validates a bookmark-shaped item list: unique stable IDs, resolvable parents, no cycles, bounded
@@ -218,6 +224,7 @@ static BOOL FDMValidateMergedTree(NSDictionary<NSString *, NSString *> *parentOf
         NSMutableDictionary *item = [NSMutableDictionary dictionary];
         item[@"id"] = FDMRepoStringOrEmpty(row[self.idColumn]);
         if (![item[@"id"] length]) continue;
+        if (FDMBackupBookmarkIsRoot(item[@"id"])) continue;
         item[@"title"] = FDMRepoStringOrEmpty(row[@"title"]);
         item[@"url"] = FDMRepoStringOrEmpty(row[@"url"]);
         NSString *parent = FDMRepoStringOrEmpty(row[@"parentId"]); if (parent.length) item[@"parentID"] = parent;
@@ -249,7 +256,11 @@ static BOOL FDMValidateMergedTree(NSDictionary<NSString *, NSString *> *parentOf
         if (error) *error = FDMRepoError(@"书签数据版本不受支持");
         return nil;
     }
-    return FDMValidateBookmarkItems(FDMJSONArrayValue(document[@"items"]), YES, FDMBackupMaxBookmarks, error);
+    NSArray *items = FDMValidateBookmarkItems(FDMJSONArrayValue(document[@"items"]), YES, FDMBackupMaxBookmarks, error);
+    for (NSDictionary *item in items) if (FDMBackupBookmarkIsRoot(item[@"id"])) {
+        if (error) *error = FDMRepoError(@"宿主书签根节点不能由备份覆盖"); return nil;
+    }
+    return items;
 }
 
 - (NSDictionary<NSString *, NSNumber *> *)previewCountsForValidated:(id)validated error:(NSError **)error {
@@ -310,7 +321,9 @@ static BOOL FDMValidateMergedTree(NSDictionary<NSString *, NSString *> *parentOf
     if (replace) {
         NSMutableSet *imported = [NSMutableSet set];
         for (NSDictionary *item in validated) [imported addObject:item[@"id"]];
-        for (NSString *identifier in liveByID) if (![imported containsObject:identifier]) { [toDelete addObject:identifier]; [mergedParents removeObjectForKey:identifier]; }
+        for (NSString *identifier in liveByID) if (!FDMBackupBookmarkIsRoot(identifier) && ![imported containsObject:identifier]) {
+            [toDelete addObject:identifier]; [mergedParents removeObjectForKey:identifier];
+        }
     }
 
     // A parent must exist after the merge; a dangling parent would orphan the subtree.
@@ -411,7 +424,7 @@ static BOOL FDMValidateMergedTree(NSDictionary<NSString *, NSString *> *parentOf
     for (NSDictionary *item in validated) [kept addObject:item[@"id"]];
     for (NSDictionary *row in live) {
         NSString *identifier = FDMRepoStringOrEmpty(row[self.idColumn]);
-        if (identifier.length && ![kept containsObject:identifier]) [toDelete addObject:identifier];
+        if (identifier.length && !FDMBackupBookmarkIsRoot(identifier) && ![kept containsObject:identifier]) [toDelete addObject:identifier];
     }
     FDMBackupSQLStagedSet *set = [[FDMBackupSQLStagedSet alloc] init];
     set.beforeSnapshot = [self exportSnapshotWithRevision:NULL error:NULL] ?: [NSData data];
@@ -456,6 +469,7 @@ static BOOL FDMValidateMergedTree(NSDictionary<NSString *, NSString *> *parentOf
     for (NSDictionary *row in live) {
         NSString *identifier = FDMRepoStringOrEmpty(row[self.idColumn]);
         if (!identifier.length) { if (error) *error = FDMRepoError(@"存在没有标识的书签行"); return NO; }
+        if (FDMBackupBookmarkIsRoot(identifier)) continue;
         NSString *url = FDMRepoStringOrEmpty(row[@"url"]);
         NSNumber *fileType = [row[@"fileType"] isKindOfClass:NSNumber.class] ? row[@"fileType"] : @0;
         if (!url.length && fileType.integerValue == 0) {
@@ -545,8 +559,18 @@ static BOOL FDMValidateMergedTree(NSDictionary<NSString *, NSString *> *parentOf
         if (error) *error = FDMRepoError(@"快捷项数据版本不受支持");
         return nil;
     }
-    // Shortcut items are always leaves: no folders, no hierarchy, url required.
-    return FDMValidateBookmarkItems(FDMJSONArrayValue(document[@"items"]), NO, 500, error);
+    NSArray *items = FDMJSONArrayValue(document[@"items"]);
+    // CustomTagModel.bookMark is type 1 with an empty targetUrl, unlike URL shortcuts.
+    // Permit that exact native action, not arbitrary empty-address items or hierarchies.
+    for (id raw in items) {
+        NSDictionary *row = FDMJSONObjectValue(raw);
+        id url = row[@"url"];
+        if (row[@"parentID"] || (url && ![url isKindOfClass:NSString.class]) ||
+            (![FDMJSONStringValue(url) length] && ![row[@"fileType"] isEqual:@1])) {
+            if (error) *error = FDMRepoError(@"主页快捷项必须带地址，或为原生书签入口"); return nil;
+        }
+    }
+    return FDMValidateBookmarkItems(items, YES, 500, error);
 }
 
 - (NSDictionary<NSString *, NSNumber *> *)previewCountsForValidated:(id)validated error:(NSError **)error {
@@ -737,7 +761,7 @@ static BOOL FDMBackupHomeTagTypeIsReserved(NSNumber *type) {
         NSString *identifier = FDMRepoStringOrEmpty(row[@"uuid"]);
         if (!identifier.length) { if (error) *error = FDMRepoError(@"存在没有标识的快捷项行"); return NO; }
         NSString *url = FDMRepoStringOrEmpty(row[@"targetUrl"]);
-        if (!url.length) {
+        if (!url.length && ![row[@"type"] isEqual:@1]) {
             if (error) *error = FDMRepoError([NSString stringWithFormat:@"快捷项缺少地址：%@", identifier]);
             return NO;
         }

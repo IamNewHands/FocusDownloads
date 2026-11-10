@@ -70,7 +70,8 @@ static NSDictionary<NSString *, NSArray<NSNumber *> *> *FDMBackupIntegerPreferen
     static NSDictionary *ranges;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        ranges = @{@"fontSize": @[@8, @72],
+        // Focus's FontModel/font picker stores a 0-9 index, default 3, not points.
+        ranges = @{@"fontSize": @[@0, @9],
                    @"translateEngine": @[@0, @32],
                    @"tranlsateTargetLanguage": @[@0, @256],
                    @"bookMarkSortType": @[@0, @16]};

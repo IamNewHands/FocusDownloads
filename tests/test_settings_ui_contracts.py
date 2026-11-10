@@ -11,6 +11,7 @@ class SettingsUIContracts(unittest.TestCase):
     def setUpClass(cls):
         cls.host = (ROOT / "src/FocusDM.m").read_text(encoding="utf-8")
         cls.downloads = (ROOT / "src/FDMDownloadsViewController.m").read_text(encoding="utf-8")
+        cls.page_navigation = (ROOT / "src/FDMPageNavigation.m").read_text(encoding="utf-8")
 
     def test_owned_type_cannot_render_vip_or_recommendation_cells(self):
         match = re.search(r"FDMSettingsRowType = (0x[0-9a-f]+|\d+);", self.host)
@@ -32,9 +33,10 @@ class SettingsUIContracts(unittest.TestCase):
         self.assertIn('(IMP)FDMSettingsUpdate, &FDMOriginalSettingsUpdate', self.host)
 
     def test_navigation_appearance_belongs_to_the_download_item(self):
-        self.assertIn("[appearance configureWithOpaqueBackground]", self.downloads)
+        self.assertIn("FDMPrepareOwnedPage(self);", self.downloads)
+        self.assertIn("[appearance configureWithOpaqueBackground]", self.page_navigation)
         for name in ("standardAppearance", "scrollEdgeAppearance", "compactAppearance", "compactScrollEdgeAppearance"):
-            self.assertIn(f"self.navigationItem.{name} = appearance", self.downloads)
+            self.assertIn(f"page.navigationItem.{name} = appearance", self.page_navigation)
         self.assertNotIn("navigation.navigationBar.standardAppearance =", self.downloads)
 
     def test_snapshots_wait_for_completed_appearance(self):

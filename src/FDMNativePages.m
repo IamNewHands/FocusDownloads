@@ -3,6 +3,7 @@
 #import "FDMBackup.h"
 #import "FDMCommon.h"
 #import "FDMNavigation.h"
+#import "FDMPageNavigation.h"
 #import <math.h>
 #import <objc/message.h>
 
@@ -53,6 +54,7 @@ static NSArray<NSString *> *FDMPolicyOptionsForField(NSString *field) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"网站规则";
+    FDMPrepareOwnedPage(self);
     _origins = @[];
     _search = [[UISearchController alloc] initWithSearchResultsController:nil];
     _search.obscuresBackgroundDuringPresentation = NO;
@@ -66,6 +68,7 @@ static NSArray<NSString *> *FDMPolicyOptionsForField(NSString *field) {
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    FDMPrepareOwnedPage(self);
     [self.navigationController setNavigationBarHidden:NO animated:animated];
 }
 - (void)dealloc {
@@ -127,7 +130,7 @@ static NSArray<NSString *> *FDMPolicyOptionsForField(NSString *field) {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (indexPath.row >= (NSInteger)_origins.count) return;
     FDMSitePolicyEditViewController *page = [[FDMSitePolicyEditViewController alloc] initWithOrigin:_origins[indexPath.row]];
-    [self.navigationController pushViewController:page animated:YES];
+    FDMShowOwnedPage(self, page);
 }
 
 - (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -174,6 +177,7 @@ static NSArray<NSString *> *FDMPolicyOptionsForField(NSString *field) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = _origin;
+    FDMPrepareOwnedPage(self);
     _baseline = FDMPolicyGlobalBaseline();
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"保存" style:UIBarButtonItemStyleDone target:self action:@selector(save)];
     self.tableView.allowsMultipleSelectionDuringEditing = NO;

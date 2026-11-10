@@ -73,6 +73,144 @@ static NSString *FDMBackupRowValue(id<FDMBackupSQLDatabase> database, NSString *
     return value;
 }
 
+#pragma mark - real host export shapes
+
+@interface PreferenceModel : NSObject <NSCoding>
+@property (nonatomic, strong) NSMutableDictionary *values;
+@end
+@implementation PreferenceModel
+- (instancetype)init { if ((self = [super init])) _values = [NSMutableDictionary dictionary]; return self; }
+- (instancetype)initWithCoder:(NSCoder *)coder {
+    if ((self = [super init])) _values = [[coder decodeObjectForKey:@"values"] mutableCopy];
+    return self;
+}
+- (void)encodeWithCoder:(NSCoder *)coder { [coder encodeObject:_values forKey:@"values"]; }
+- (id)valueForUndefinedKey:(NSString *)key { return _values[key]; }
+- (void)setValue:(id)value forUndefinedKey:(NSString *)key {
+    if (value) _values[key] = value; else [_values removeObjectForKey:key];
+}
+@end
+
+@interface FDMExportFailureRepository : FDMBackupBookmarkRepository
+@property (nonatomic) BOOL raisesDuringValidation;
+@end
+@implementation FDMExportFailureRepository
+- (BOOL)isAvailable { return YES; }
+- (NSString *)storageDomain { return nil; }
+- (NSData *)exportSnapshotWithRevision:(NSString **)revision error:(NSError **)error {
+    return _raisesDuringValidation ? FDMBackupData(@"{\"schemaVersion\":1,\"items\":[]}") : nil;
+}
+- (id)validateImportPayload:(NSData *)payload error:(NSError **)error {
+    [NSException raise:@"HostFixtureFailure" format:@"private fixture value must not reach diagnostics"];
+    return nil;
+}
+@end
+
+static void FDMTestHostDefaultExportShapes(void) {
+    NSString *path = [FDMDocumentsPath() stringByAppendingPathComponent:@"host-export.sqlite"];
+    __block NSError *error = nil;
+    FDMSQLiteFixtureDatabase *database = [[FDMSQLiteFixtureDatabase alloc] initWithPath:path error:&error];
+    FDMBackupCreateSchema(database);
+    // TableManager creates this exact sentinel without url/fileType/order on every install.
+    [database inDatabase:^(id<FDMBackupSQLExecutor> sql) {
+        FDMBackupCheck([sql update:@"INSERT INTO t_bookmark(bookmarkId,parentId,title) VALUES(?,?,?)"
+            parameters:@[@"root", @"", @"Bookmarks"] error:&error], @"host root inserted");
+        FDMBackupCheck([sql update:@"INSERT INTO t_hometags(uuid,title,targetUrl,iconUrl,type,ppOrder) VALUES(?,?,?,?,?,?)"
+            parameters:@[@"bookmark-action", @"Bookmarks", @"", @"", @1, @1] error:&error], @"native bookmark shortcut inserted");
+    }];
+    FDMBackupSeedBookmark(database, @"child", @"root", @"Child", @"https://child.example/", 0, 0);
+    FDMBackupBookmarkRepository *bookmarks = [[FDMBackupBookmarkRepository alloc] initWithDatabase:database];
+    FDMBackupHomeTagRepository *shortcuts = [[FDMBackupHomeTagRepository alloc] initWithDatabase:database];
+    NSData *rootBefore = [bookmarks recoverySnapshotWithError:&error];
+    NSString *suite = [@"focusdm.host-export." stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:suite];
+    PreferenceModel *model = [PreferenceModel new];
+    model.values[@"fontSize"] = @3;
+    model.values[@"enabledReader"] = @YES;
+    [defaults setObject:[NSKeyedArchiver archivedDataWithRootObject:model requiringSecureCoding:NO error:&error]
+        forKey:@"key_preferencemanager_commonconfig"];
+    FDMBackupPreferencesRepository *preferences = [[FDMBackupPreferencesRepository alloc] initWithUserDefaults:defaults];
+    FDMBackupSearchRepository *search = [[FDMBackupSearchRepository alloc] initWithUserDefaults:defaults];
+    [defaults setObject:@[@{@"uuid": @"built-in-3", @"title": @"Bing", @"searchUrl": @"https://www.bing.com/search?q=%@",
+        @"type": @3, @"position": @0, @"isSelected": @YES}] forKey:@"saved_search_list_data"];
+    FDMBackupPolicyRepository *policies = [FDMBackupPolicyRepository new];
+    FDMBackupCoordinator *coordinator = [FDMBackupCoordinator new];
+    [coordinator registerRepository:bookmarks database:database];
+    [coordinator registerRepository:shortcuts database:database];
+    [coordinator registerRepository:preferences];
+    [coordinator registerRepository:search];
+    [coordinator registerRepository:policies];
+    NSArray *categories = @[FDMBackupCategoryBookmarks, FDMBackupCategoryHomeTags, FDMBackupCategorySearch,
+        FDMBackupCategorySitePolicies, FDMBackupCategoryPreferences];
+    for (NSString *category in categories) {
+        error = nil;
+        NSData *exported = [coordinator exportCategories:@[category] error:&error];
+        FDMBackupCheck(exported && !error && FDMBackupDecode(exported, &error), [NSString stringWithFormat:@"%@ exports independently", category]);
+    }
+    error = nil;
+    FDMBackupContainer *container = FDMBackupDecode([coordinator exportCategories:categories error:&error], &error);
+    FDMBackupCheck(container && !error && container.categories.count == 5, @"all default categories export together");
+    FDMBackupCheck(container.categories[FDMBackupCategoryBookmarks].itemCount == 1, @"host root is not counted as a user bookmark");
+    FDMBackupCheck(container.categories[FDMBackupCategoryHomeTags].itemCount == 1, @"native shortcut is preserved");
+    NSArray *tree = [bookmarks validateImportPayload:container.categories[FDMBackupCategoryBookmarks].payload error:&error];
+    FDMBackupCheck([tree.firstObject[@"parentID"] isEqual:@"root"], @"child retains native root parent");
+    FDMBackupCheck([[bookmarks recoverySnapshotWithError:&error] isEqual:rootBefore], @"export never changes host rows");
+    FDMBackupImportPlan *plan = [coordinator previewContainer:container categories:categories replace:YES error:&error];
+    FDMBackupCheck(plan && [coordinator applyPlan:plan error:&error] && [bookmarks verifyCommittedStateWithError:&error],
+        @"combined restore accepts native root children, shortcut action and font index");
+    FDMBackupCheck([FDMBackupRowValue(database, @"t_hometags", @"uuid", @"bookmark-action", @"type") isEqual:@"1"] &&
+        [FDMBackupRowValue(database, @"t_hometags", @"uuid", @"bookmark-action", @"targetUrl") isEqual:@""],
+        @"restore retains the native bookmark shortcut action");
+    __block NSDictionary *root = nil;
+    [database inDatabase:^(id<FDMBackupSQLExecutor> sql) {
+        root = [sql query:@"SELECT * FROM t_bookmark WHERE bookmarkId=?" parameters:@[@"root"] error:NULL].firstObject;
+    }];
+    FDMBackupCheck(root && root[@"fileType"] == NSNull.null && root[@"url"] == NSNull.null, @"replace preserves sentinel null columns");
+    NSData *claimedRoot = FDMJSONCanonicalData(@{@"schemaVersion": @1, @"items": @[
+        @{@"id": @"root", @"title": @"Foreign", @"fileType": @1}]}, NULL);
+    FDMBackupCheck(![bookmarks validateImportPayload:claimedRoot error:NULL], @"backup cannot claim host root ownership");
+    NSData *empty = FDMJSONCanonicalData(@{@"schemaVersion": @1, @"items": @[]}, NULL);
+    id restore = [bookmarks stageRestoreSnapshot:empty error:&error];
+    FDMBackupCheck(restore && [bookmarks commitStaged:restore error:&error] && FDMBackupCountRows(database, @"t_bookmark") == 1,
+        @"portable rollback preserves root even when no user bookmarks remain");
+    for (NSNumber *index in @[@0, @3, @9]) {
+        NSData *payload = FDMJSONCanonicalData(@{@"schemaVersion": @1, @"values": @{@"fontSize": index}}, NULL);
+        FDMBackupCheck([preferences validateImportPayload:payload error:NULL] != nil, @"native font indices accepted");
+    }
+    for (NSNumber *invalid in @[@(-1), @10, @16, @YES, @3.5]) {
+        NSData *payload = FDMJSONCanonicalData(@{@"schemaVersion": @1, @"values": @{@"fontSize": invalid}}, NULL);
+        FDMBackupCheck(![preferences validateImportPayload:payload error:NULL], @"invalid font indices refused");
+    }
+    NSData *invalidShortcut = FDMJSONCanonicalData(@{@"schemaVersion": @1, @"items": @[
+        @{@"id": @"invalid", @"title": @"Empty URL", @"url": @"", @"fileType": @0}]}, NULL);
+    FDMBackupCheck(![shortcuts validateImportPayload:invalidShortcut error:NULL], @"ordinary shortcuts still require URLs");
+    NSData *hierarchicalShortcut = FDMJSONCanonicalData(@{@"schemaVersion": @1, @"items": @[
+        @{@"id": @"invalid", @"parentID": @"parent", @"url": @"https://child.example/"}]}, NULL);
+    FDMBackupCheck(![shortcuts validateImportPayload:hierarchicalShortcut error:NULL], @"shortcut hierarchy still refused");
+    NSData *wrongURLType = FDMJSONCanonicalData(@{@"schemaVersion": @1, @"items": @[
+        @{@"id": @"invalid", @"url": @42, @"fileType": @1}]}, NULL);
+    FDMBackupCheck(![shortcuts validateImportPayload:wrongURLType error:NULL], @"native action does not excuse malformed URL types");
+    [defaults removePersistentDomainForName:suite];
+    [database close];
+    printf("host default export shapes and native root preservation passed\n");
+}
+
+static void FDMTestExportFailureDiagnostics(void) {
+    FDMBackupCoordinator *coordinator = [FDMBackupCoordinator new];
+    FDMExportFailureRepository *repository = [[FDMExportFailureRepository alloc] initWithDatabase:nil];
+    [coordinator registerRepository:repository];
+    NSError *error = nil;
+    FDMBackupCheck(![coordinator exportCategories:@[FDMBackupCategoryBookmarks] error:&error] &&
+        [error.localizedDescription containsString:@"书签"] && [error.localizedDescription containsString:@"读取"],
+        @"missing repository error still identifies category and read stage");
+    repository.raisesDuringValidation = YES;
+    error = nil;
+    FDMBackupCheck(![coordinator exportCategories:@[FDMBackupCategoryBookmarks] error:&error] &&
+        [error.localizedDescription containsString:@"校验"] && ![error.localizedDescription containsString:@"private fixture"],
+        @"host exception becomes bounded validation diagnostic without private reason");
+    printf("export failure diagnostics passed\n");
+}
+
 #pragma mark - B03: validation refuses bad input before any write
 
 static void FDMTestValidationRefusesBadInput(void) {
@@ -638,6 +776,8 @@ static void FDMBackupBeginCase(NSString *label) {
     (void)FDMDirectory(@"FocusDM");
 }
 void FDMRunBackupRegression(void) {
+    FDMBackupBeginCase(@"HostDefaultExportShapes"); FDMTestHostDefaultExportShapes();
+    FDMBackupBeginCase(@"ExportFailureDiagnostics"); FDMTestExportFailureDiagnostics();
     FDMBackupBeginCase(@"ValidationRefusesBadInput"); FDMTestValidationRefusesBadInput();
     FDMBackupBeginCase(@"MergeAndReplace"); FDMTestMergeAndReplace();
     FDMBackupBeginCase(@"HierarchyFidelity"); FDMTestHierarchyFidelity();

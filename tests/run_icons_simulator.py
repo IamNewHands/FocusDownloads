@@ -57,6 +57,7 @@ def main():
     command.extend(str(path.relative_to(root)) for path in sorted((root / "src").glob("*.m")))
     command.extend(["tests/icons_regression.m", "tests/forms_regression.m",
                     "tests/settings_regression.m", "tests/download_ui_regression.m",
+                    "tests/page_navigation_regression.m",
                     "tests/icons_app_main.m", "-o", str(output / "IconRegression")])
     run(command)
     run(["codesign", "--force", "--sign", "-", str(output)])
