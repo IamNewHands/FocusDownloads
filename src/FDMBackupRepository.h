@@ -67,6 +67,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 // YES when this repository can actually perform a restore in this build/environment.
 - (BOOL)isAvailable;
+@optional
+// Exact device-local before-image, never included in a portable backup.
+- (nullable NSData *)recoverySnapshotWithError:(NSError **)error;
+- (BOOL)restoreRecoverySnapshot:(NSData *)snapshot error:(NSError **)error;
 @end
 
 FOUNDATION_EXPORT NSString *const FDMBackupCountAdded;

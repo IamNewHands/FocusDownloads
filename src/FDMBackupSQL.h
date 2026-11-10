@@ -30,6 +30,8 @@ NS_ASSUME_NONNULL_BEGIN
 @end
 
 @protocol FDMBackupSQLBatchDatabase <FDMBackupSQLDatabase>
+// Hold the storage connection across staging, all stores, verification and marker publication.
+- (BOOL)performExclusiveAccess:(BOOL (^)(void))block error:(NSError **)error;
 // Enters the queue once and begins an IMMEDIATE transaction. Every call inside the block runs on
 // that same held connection. Returns NO when the queue could not be entered or BEGIN failed.
 - (BOOL)performAtomicBatch:(void (^)(id<FDMBackupSQLAtomicAccess> access))block error:(NSError **)error;

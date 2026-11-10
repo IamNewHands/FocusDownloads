@@ -22,6 +22,11 @@ static NSData *FDMBackupData(NSString *text) {
     return [text dataUsingEncoding:NSUTF8StringEncoding];
 }
 
+static NSError *FDMBackupDataError(NSString *message) {
+    return [NSError errorWithDomain:@"FocusDM.Backup.Test" code:1
+                           userInfo:@{NSLocalizedDescriptionKey: message}];
+}
+
 #pragma mark - fixtures
 
 // Minimal schema mirroring the host's real CREATE TABLE for the columns this feature owns.
@@ -258,42 +263,87 @@ static void FDMTestJournalRecovery(void) {
     printf("B07 journal recovery passed\n");
 }
 
+// Minimal staged set that satisfies the protocol, so the coordinator's failure path is actually
+// exercised instead of throwing on a missing selector.
+@interface FDMTestStagedSet : NSObject <FDMBackupStagedSet>
+@property (nonatomic, copy) NSData *beforeSnapshot;
+@property (nonatomic, copy) NSData *afterSnapshot;
+@end
+
+@implementation FDMTestStagedSet
+@end
+
 // A repository whose rollback always fails, to prove the coordinator keeps protection state
-// instead of reporting success.
+// instead of reporting success. It implements the full v2 protocol so the failure it injects is the
+// only reason the restore fails.
 @interface FDMFailingRollbackRepository : NSObject <FDMBackupRepository>
 @end
 
 @implementation FDMFailingRollbackRepository
 - (NSString *)categoryIdentifier { return FDMBackupCategoryPreferences; }
 - (BOOL)isAvailable { return YES; }
+// Its own store, so it takes the independent (non-SQL) commit path.
+- (NSString *)storageDomain { return nil; }
+
+- (NSData *)payload {
+    return FDMBackupData(@"{\"schemaVersion\":1,\"values\":{}}");
+}
+
 - (NSData *)exportSnapshotWithRevision:(NSString **)revision error:(NSError **)error {
-    NSData *payload = FDMBackupData(@"{\"schemaVersion\":1,\"values\":{}}");
+    NSData *payload = [self payload];
+    // The revision fingerprint is a string, not bytes.
     if (revision) *revision = FDMBackupSHA256(payload);
     return payload;
 }
-- (NSString *)currentRevisionWithError:(NSError **)error { return [self exportSnapshotWithRevision:NULL error:error]; }
-- (id)validateImportPayload:(NSData *)payload error:(NSError **)error {
-    return FDMJSONObjectValue(FDMJSONParseData(payload, error)[@"values"]) ?: @{};
+
+- (NSString *)currentRevisionWithError:(NSError **)error {
+    return FDMBackupSHA256([self payload]);
 }
+
+- (id)validateImportPayload:(NSData *)payload error:(NSError **)error {
+    id root = FDMJSONParseData(payload, error);
+    NSDictionary *document = FDMJSONObjectValue(root);
+    if (!document) { if (error) *error = FDMBackupDataError(@"偏好数据必须是对象"); return nil; }
+    return FDMJSONObjectValue(document[@"values"]) ?: @{};
+}
+
 - (NSDictionary<NSString *, NSNumber *> *)previewCountsForValidated:(id)validated error:(NSError **)error {
     return @{FDMBackupCountAdded: @0, FDMBackupCountIdentical: @0, FDMBackupCountConflict: @0,
              FDMBackupCountDowngraded: @0, FDMBackupCountDisabled: @0, FDMBackupCountUnsupported: @0};
 }
+
 - (id)stageMergeValidated:(id)validated replace:(BOOL)replace error:(NSError **)error {
-    return @{@"before": [self exportSnapshotWithRevision:NULL error:NULL] ?: [NSData data],
-             @"after": [self exportSnapshotWithRevision:NULL error:NULL] ?: [NSData data]};
+    FDMTestStagedSet *staged = [[FDMTestStagedSet alloc] init];
+    staged.beforeSnapshot = [self payload];
+    staged.afterSnapshot = [self payload];
+    return staged;
 }
+
+- (BOOL)applyStaged:(id)staged onExecutor:(id<FDMBackupSQLExecutor>)executor error:(NSError **)error {
+    if (error) *error = FDMBackupDataError(@"该类别不通过 SQL 提交");
+    return NO;
+}
+
 - (NSData *)commitStaged:(id)staged error:(NSError **)error {
     if (error) *error = [NSError errorWithDomain:@"FocusDM.Backup.Test" code:1
                                         userInfo:@{NSLocalizedDescriptionKey: @"注入的提交失败"}];
     return nil;
 }
+
 - (BOOL)rollbackStaged:(id)staged error:(NSError **)error {
     if (error) *error = [NSError errorWithDomain:@"FocusDM.Backup.Test" code:2
                                         userInfo:@{NSLocalizedDescriptionKey: @"注入的回滚失败"}];
     return NO;
 }
-- (id)stageRestoreSnapshot:(NSData *)snapshot error:(NSError **)error { return nil; }
+
+- (id)stageRestoreSnapshot:(NSData *)snapshot error:(NSError **)error {
+    FDMTestStagedSet *staged = [[FDMTestStagedSet alloc] init];
+    staged.beforeSnapshot = snapshot;
+    staged.afterSnapshot = snapshot;
+    return staged;
+}
+
+- (BOOL)verifyCommittedStateWithError:(NSError **)error { return YES; }
 - (void)reloadHostCache {}
 @end
 
@@ -402,11 +452,88 @@ static void FDMTestPolicyDowngrade(void) {
     printf("policy permission downgrade passed\n");
 }
 
+// B05: a local change after preview must force a re-preview, never silently overwrite.
+static void FDMTestConcurrentChangeForcesRepreview(void) {
+    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:
+                      [NSString stringWithFormat:@"fdm-backup-b05-%@.sqlite", NSUUID.UUID.UUIDString]];
+    NSError *error = nil;
+    FDMSQLiteFixtureDatabase *database = [[FDMSQLiteFixtureDatabase alloc] initWithPath:path error:&error];
+    FDMBackupCreateSchema(database);
+    FDMBackupSeedBookmark(database, @"shared-1", @"", @"Local", @"https://shared.example/1", 0, 0);
+    FDMBackupBookmarkRepository *repository = [[FDMBackupBookmarkRepository alloc] initWithDatabase:database];
+
+    NSData *incoming = FDMJSONCanonicalData(@{@"schemaVersion": @1, @"items": @[
+        @{@"id": @"new-1", @"title": @"New", @"url": @"https://new.example/1", @"order": @0}]}, &error);
+    id validated = [repository validateImportPayload:incoming error:&error];
+    NSString *previewRevision = [repository currentRevisionWithError:&error];
+    FDMBackupCheck(previewRevision.length > 0, @"preview revision captured");
+
+    // A local edit lands after the preview.
+    FDMBackupSeedBookmark(database, @"local-2", @"", @"Edited", @"https://edited.example/1", 0, 1);
+    NSString *currentRevision = [repository currentRevisionWithError:&error];
+    FDMBackupCheck(![currentRevision isEqual:previewRevision], @"revision changes after a local edit");
+
+    // The coordinator must refuse to apply a plan whose revision no longer matches.
+    FDMBackupCategory *category = [FDMBackupCategory category:FDMBackupCategoryBookmarks
+                                                      payload:incoming itemCount:1];
+    NSData *encoded = FDMBackupEncode(@[category], @"v20", NULL);
+    FDMBackupContainer *container = FDMBackupDecode(encoded, NULL);
+    FDMBackupCheck(container != nil, @"container decoded for B05");
+
+    FDMBackupCoordinator *coordinator = [[FDMBackupCoordinator alloc] init];
+    [coordinator registerRepository:repository database:database];
+    FDMBackupImportPlan *stalePlan = [coordinator previewContainer:container
+                                                       categories:@[FDMBackupCategoryBookmarks]
+                                                          replace:NO
+                                                            error:&error];
+    FDMBackupCheck(stalePlan != nil, @"plan built before the edit");
+    // Simulate the edit happening between preview and apply by mutating after the plan exists.
+    FDMBackupSeedBookmark(database, @"local-3", @"", @"Later", @"https://later.example/1", 0, 2);
+    BOOL applied = [coordinator applyPlan:stalePlan error:&error];
+    FDMBackupCheck(!applied, @"stale plan is refused, not applied over a newer local state");
+    FDMBackupCheck(FDMBackupCountRows(database, @"t_bookmark") == 3, @"refused apply wrote nothing");
+
+    [database close];
+    [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+    printf("B05 concurrent change forces re-preview passed\n");
+}
+
+// B07 (strict journal): a journal whose before snapshot fails its hash must block, and must NOT be
+// deleted as if recovery had succeeded.
+static void FDMTestJournalHashMismatchBlocks(void) {
+    NSString *documents = FDMDocumentsPath();
+    NSString *journalPath = [documents stringByAppendingPathComponent:@"FocusDM/backup-journal.json"];
+    NSData *snapshot = FDMBackupData(@"{\"schemaVersion\":1,\"items\":[]}");
+    // Correct hash recorded, but the stored bytes are different: verification must fail.
+    NSDictionary *journal = @{
+        @"schemaVersion": @1,
+        @"transactionID": NSUUID.UUID.UUIDString,
+        @"stage": @"prepared",
+        @"categories": @[FDMBackupCategoryBookmarks],
+        @"createdAt": @((long long)NSDate.date.timeIntervalSince1970),
+        @"before": @{FDMBackupCategoryBookmarks: [FDMBackupData(@"{\"schemaVersion\":1,\"items\":[{\"id\":\"tampered\"}]}") base64EncodedStringWithOptions:0]},
+        @"beforeSHA256": @{FDMBackupCategoryBookmarks: FDMBackupSHA256(snapshot)},
+        @"after": @{},
+        @"afterSHA256": @{},
+    };
+    NSError *error = nil;
+    FDMBackupCheck(FDMWriteJSON(journal, journalPath, &error), @"tampered journal written");
+
+    FDMBackupCoordinator *coordinator = [[FDMBackupCoordinator alloc] init];
+    [coordinator recoverInterruptedTransaction];
+    FDMBackupCheck(coordinator.recoveryNotice.length > 0, @"hash mismatch reports a notice");
+    FDMBackupCheck([[NSFileManager defaultManager] fileExistsAtPath:journalPath],
+                   @"unverifiable journal is kept, never deleted as success");
+    printf("B07 journal hash mismatch blocks passed\n");
+}
+
 void FDMRunBackupRegression(void) {
     FDMTestValidationRefusesBadInput();
     FDMTestMergeAndReplace();
     FDMTestHierarchyFidelity();
     FDMTestJournalRecovery();
+    FDMTestJournalHashMismatchBlocks();
+    FDMTestConcurrentChangeForcesRepreview();
     FDMTestRollbackFailureKeepsProtection();
     FDMTestNoSecretsInContainer();
     FDMTestScriptImportRules();
@@ -420,6 +547,9 @@ void FDMRunBackupRegression(void) {
 int main(void) {
     @autoreleasepool {
         @try {
+            NSString *root = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"focusdm-backup-regression-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+            [[NSFileManager defaultManager] createDirectoryAtPath:root withIntermediateDirectories:YES attributes:nil error:NULL];
+            setenv("FDM_TEST_DOCUMENTS", root.fileSystemRepresentation, 1);
             FDMRunBackupRegression();
             return 0;
         } @catch (NSException *exception) {

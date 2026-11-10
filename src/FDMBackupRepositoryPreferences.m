@@ -1,5 +1,6 @@
 #import "FDMBackupRepositoryImpl.h"
 #import "FDMJSON.h"
+#import "FDMBackupRecovery.h"
 
 // Preference storage facts (confirmed from the binary):
 //   -[PreferenceManager encode]: archivedDataWithRootObject:self.items -> standardUserDefaults
@@ -12,6 +13,18 @@ static NSError *FDMRepoError(NSString *message) {
     return [NSError errorWithDomain:@"FocusDM.Backup.Repository" code:1 userInfo:@{NSLocalizedDescriptionKey: message}];
 }
 
+static id FDMDecodeLocalPreference(NSData *data, NSError **error) {
+    if (![data isKindOfClass:NSData.class] || !data.length) return nil;
+    @try {
+        NSKeyedUnarchiver *decoder = [[NSKeyedUnarchiver alloc] initForReadingFromData:data error:error];
+        // This is the same trusted archive the host wrote; no imported archive is ever decoded.
+        decoder.requiresSecureCoding = NO;
+        id value = [decoder decodeObjectForKey:NSKeyedArchiveRootObjectKey];
+        [decoder finishDecoding];
+        Class model = NSClassFromString(@"PreferenceModel");
+        return model && [value isKindOfClass:model] ? value : nil;
+    } @catch (NSException *exception) { if (error) *error = FDMRepoError(@"本地偏好归档无法安全读取"); return nil; }
+}
 // Explicit allowlist of PreferenceModel fields that are portable user settings.
 //
 // Deliberately EXCLUDED even though they exist on the model, because they are identity, audit or
@@ -110,7 +123,7 @@ static NSDictionary<NSString *, NSArray<NSNumber *> *> *FDMBackupIntegerPreferen
 
 - (NSData *)exportSnapshotWithRevision:(NSString **)revision error:(NSError **)error {
     if (!_defaults) { if (error) *error = FDMRepoError(@"偏好设置不可用"); return nil; }
-    id items = [self hostPreferenceItems];
+    id items = FDMDecodeLocalPreference([_defaults objectForKey:FDMBackupPreferenceCommonKey], NULL) ?: [self hostPreferenceItems];
     if (!items) { if (error) *error = FDMRepoError(@"无法读取偏好设置模型"); return nil; }
     NSMutableDictionary *values = [NSMutableDictionary dictionary];
     for (NSString *field in FDMBackupAllowedPreferenceFields()) {
@@ -226,46 +239,56 @@ static NSDictionary<NSString *, NSArray<NSNumber *> *> *FDMBackupIntegerPreferen
     return staged;
 }
 
-// Applies the allowlisted fields onto the live model, then lets the host re-encode its own archive.
-// This keeps every field we do not own (consent flags, iCloud timestamps, wallpaper) untouched.
+// Applies the allowlisted fields onto a CLONE of the trusted local archive, then writes that archive
+// back as raw bytes. The live PreferenceModel is never mutated here: mutating it would fire KVO and
+// publish a half-applied configuration while the coordinator still holds its barrier.
 - (NSData *)commitStaged:(id)staged error:(NSError **)error {
     FDMBackupPreferenceStagedSet *set = staged;
     if (![set isKindOfClass:FDMBackupPreferenceStagedSet.class]) { if (error) *error = FDMRepoError(@"暂存集无效"); return nil; }
-    Class managerClass = NSClassFromString(@"PreferenceManager");
-    SEL shared = NSSelectorFromString(@"shareInstance");
-    if (!managerClass || ![managerClass respondsToSelector:shared]) {
-        if (error) *error = FDMRepoError(@"偏好设置模型不可用");
+    if (!_defaults) { if (error) *error = FDMRepoError(@"偏好设置不可用"); return nil; }
+    // The archive captured at stage time is the trusted base: every field we do not own survives
+    // byte-for-byte because we re-archive that object rather than the live one.
+    id archive = set.beforeArchive;
+    if (!archive) {
+        if (error) *error = FDMRepoError(@"原偏好归档不可用，未写入");
         return nil;
     }
-    id manager = ((id (*)(id, SEL))objc_msgSend)((id)managerClass, shared);
-    id items = FDMValue(manager, @"items");
-    if (!items) { if (error) *error = FDMRepoError(@"无法读取偏好设置模型"); return nil; }
+    id mutableCopy = nil;
+    @try {
+        NSData *data = archive;
+        if ([archive isKindOfClass:NSData.class]) {
+            mutableCopy = FDMDecodeLocalPreference(data, NULL);
+        }
+    } @catch (NSException *exception) { mutableCopy = nil; }
+    if (!mutableCopy) {
+        // Without a decodable base we must not overwrite the user's archive with a partial object.
+        if (error) *error = FDMRepoError(@"偏好归档无法解析，未写入");
+        return nil;
+    }
     @try {
         for (NSString *field in set.afterFields) {
             if (![FDMBackupAllowedPreferenceFields() containsObject:field]) continue;
-            [items setValue:set.afterFields[field] forKey:field];
+            [mutableCopy setValue:set.afterFields[field] forKey:field];
         }
     } @catch (NSException *exception) {
         if (error) *error = FDMRepoError([NSString stringWithFormat:@"偏好写入失败：%@", exception.reason]);
         return nil;
     }
-    SEL encode = NSSelectorFromString(@"encode");
-    if (![manager respondsToSelector:encode]) { if (error) *error = FDMRepoError(@"偏好设置无法保存"); return nil; }
-    @try { ((void (*)(id, SEL))objc_msgSend)(manager, encode); }
-    @catch (NSException *exception) {
-        if (error) *error = FDMRepoError([NSString stringWithFormat:@"偏好保存失败：%@", exception.reason]);
+    NSData *encoded = nil;
+    @try { encoded = [NSKeyedArchiver archivedDataWithRootObject:mutableCopy requiringSecureCoding:NO error:NULL]; }
+    @catch (NSException *exception) { encoded = nil; }
+    if (!encoded.length) {
+        if (error) *error = FDMRepoError(@"偏好归档编码失败，未写入");
         return nil;
     }
-    // Verify by re-reading through the host's own accessor, not by trusting encode's silence.
-    NSData *verify = [self exportSnapshotWithRevision:NULL error:NULL];
-    if (!verify) { if (error) *error = FDMRepoError(@"偏好读回校验失败"); return nil; }
-    NSDictionary *verifyFields = FDMJSONObjectValue(FDMJSONParseData(verify, NULL)[@"values"]) ?: @{};
-    for (NSString *field in set.afterFields) {
-        if (![FDMBackupAllowedPreferenceFields() containsObject:field]) continue;
-        if (![verifyFields[field] isEqual:set.afterFields[field]]) {
-            if (error) *error = FDMRepoError([NSString stringWithFormat:@"偏好项未生效：%@", field]);
-            return nil;
-        }
+    // Write the raw defaults value and verify by reading the raw value back, not by re-reading the
+    // live model (which has not been reloaded yet by design).
+    [_defaults setObject:encoded forKey:FDMBackupPreferenceCommonKey];
+    [_defaults synchronize];
+    NSData *readBack = [_defaults objectForKey:FDMBackupPreferenceCommonKey];
+    if (![readBack isEqualToData:encoded]) {
+        if (error) *error = FDMRepoError(@"偏好归档读回校验失败");
+        return nil;
     }
     return set.afterSnapshot;
 }
@@ -282,6 +305,25 @@ static NSDictionary<NSString *, NSArray<NSNumber *> *> *FDMBackupIntegerPreferen
     return staged;
 }
 
+- (NSData *)recoverySnapshotWithError:(NSError **)error {
+    id archive = [_defaults objectForKey:FDMBackupPreferenceCommonKey];
+    if (archive && ![archive isKindOfClass:NSData.class]) { if (error) *error = FDMRepoError(@"本地偏好归档类型无效"); return nil; }
+    return FDMJSONCanonicalData(@{@"recoverySchema": @1, @"archive": archive ? [archive base64EncodedStringWithOptions:0] : NSNull.null}, error);
+}
+- (BOOL)restoreRecoverySnapshot:(NSData *)snapshot error:(NSError **)error {
+    NSDictionary *root = FDMJSONObjectValue(FDMJSONParseDataBounded(snapshot, 32, 32*1024*1024, error));
+    if (![root[@"recoverySchema"] isEqual:@1] || !root[@"archive"]) { if (error) *error = FDMRepoError(@"偏好前像结构无效"); return NO; }
+    if (root[@"archive"] == NSNull.null) [_defaults removeObjectForKey:FDMBackupPreferenceCommonKey];
+    else {
+        if (![root[@"archive"] isKindOfClass:NSString.class]) return NO;
+        NSData *archive = [[NSData alloc] initWithBase64EncodedString:root[@"archive"] options:0];
+        if (!archive || !FDMDecodeLocalPreference(archive, error)) return NO;
+        [_defaults setObject:archive forKey:FDMBackupPreferenceCommonKey];
+    }
+    [_defaults synchronize];
+    return root[@"archive"] == NSNull.null ? [_defaults objectForKey:FDMBackupPreferenceCommonKey] == nil :
+        [[[_defaults objectForKey:FDMBackupPreferenceCommonKey] base64EncodedStringWithOptions:0] isEqual:root[@"archive"]];
+}
 - (BOOL)rollbackStaged:(id)staged error:(NSError **)error {
     FDMBackupPreferenceStagedSet *set = staged;
     if (![set isKindOfClass:FDMBackupPreferenceStagedSet.class]) { if (error) *error = FDMRepoError(@"暂存集无效"); return NO; }
@@ -304,19 +346,14 @@ static NSDictionary<NSString *, NSArray<NSNumber *> *> *FDMBackupIntegerPreferen
 }
 
 - (BOOL)verifyCommittedStateWithError:(NSError **)error {
-    // The host model is the source of truth; re-reading it proves the values actually landed.
-    id items = [self hostPreferenceItems];
-    if (!items) { if (error) *error = FDMRepoError(@"偏好设置模型不可读"); return NO; }
-    NSData *live = [self exportSnapshotWithRevision:NULL error:error];
-    if (!live) return NO;
-    // Every allowlisted field must still be readable through the model after the write.
-    NSDictionary *values = FDMJSONObjectValue(FDMJSONParseData(live, NULL)[@"values"]) ?: @{};
-    for (NSString *field in values) {
-        if (![FDMBackupAllowedPreferenceFields() containsObject:field]) {
-            if (error) *error = FDMRepoError([NSString stringWithFormat:@"偏好项越界：%@", field]);
-            return NO;
-        }
-    }
+    // Verify the raw defaults value: the live model is only reloaded after the marker is written.
+    id stored = [_defaults objectForKey:FDMBackupPreferenceCommonKey];
+    if (!stored) { if (error) *error = FDMRepoError(@"偏好归档读回缺失"); return NO; }
+    if (![stored isKindOfClass:NSData.class]) { if (error) *error = FDMRepoError(@"偏好归档读回类型无效"); return NO; }
+    id decoded = nil;
+    @try { decoded = FDMDecodeLocalPreference(stored, NULL); }
+    @catch (NSException *exception) { decoded = nil; }
+    if (!decoded) { if (error) *error = FDMRepoError(@"偏好归档无法解析"); return NO; }
     return YES;
 }
 @end

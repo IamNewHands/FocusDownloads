@@ -211,13 +211,13 @@ FDMBackupContainer *FDMBackupDecode(NSData *data, NSError **error) {
         if (!decoded) { if (error) *error = FDMBackupError([NSString stringWithFormat:@"%@ 的 base64 数据无效", identifier]); return nil; }
         if (decoded.length != byteLength) { if (error) *error = FDMBackupError([NSString stringWithFormat:@"%@ 的实际长度与声明不符", identifier]); return nil; }
         if (![FDMBackupSHA256(decoded) isEqual:hash]) { if (error) *error = FDMBackupError([NSString stringWithFormat:@"%@ 的校验值不匹配", identifier]); return nil; }
+        decodedTotal += decoded.length;
+        if (decodedTotal > FDMBackupMaxPayloadBytes) { if (error) *error = FDMBackupError(@"备份内容总大小超出上限"); return nil; }
         if (![FDMBackupCategoryOrder() containsObject:identifier]) {
             // Unknown categories are reported, never silently applied.
             [unsupported addObject:identifier];
             continue;
         }
-        decodedTotal += decoded.length;
-        if (decodedTotal > FDMBackupMaxPayloadBytes) { if (error) *error = FDMBackupError(@"备份内容总大小超出上限"); return nil; }
         categories[identifier] = [FDMBackupCategory category:identifier payload:decoded itemCount:(NSUInteger)itemCount];
     }
     if (!categories.count && !unsupported.count) { if (error) *error = FDMBackupError(@"备份不含可用类别"); return nil; }

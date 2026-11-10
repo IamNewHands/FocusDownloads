@@ -1,6 +1,7 @@
 #import "FDMBackupRepositoryImpl.h"
 #import "FDMBackupSQL.h"
 #import "FDMJSON.h"
+#import "FDMBackupRecovery.h"
 
 static NSError *FDMRepoError(NSString *message) {
     return [NSError errorWithDomain:@"FocusDM.Backup.Repository" code:1 userInfo:@{NSLocalizedDescriptionKey: message}];
@@ -54,6 +55,7 @@ static NSString *FDMBackupScriptColumnForKey(NSString *key) {
 
 @implementation FDMBackupScriptsRepository {
     id<FDMBackupSQLDatabase> _database;
+    NSArray *_publishedModels;
 }
 
 - (instancetype)initWithDatabase:(id<FDMBackupSQLDatabase>)database {
@@ -101,6 +103,7 @@ static NSString *FDMBackupScriptColumnForKey(NSString *key) {
         }
         add(@"content", script[@"content"]);
         add(@"isActive", script[@"enabled"] ?: @0);
+        add(@"ppOrder", @0);
         if (script[@"ppOrder"]) add(@"ppOrder", script[@"ppOrder"]);
         NSString *now = [NSString stringWithFormat:@"%.0f", NSDate.date.timeIntervalSince1970];
         add(@"updateTime", now);
@@ -146,10 +149,10 @@ static NSString *FDMBackupScriptColumnForKey(NSString *key) {
     for (NSDictionary *row in rows) {
         NSString *identifier = FDMJSONStringValue(row[@"uuid"]);
         NSString *content = FDMJSONStringValue(row[@"content"]);
-        if (!identifier.length || !content.length) continue;
-        // A script body over the per-item budget is skipped rather than truncated: a truncated
-        // script would restore as silently broken code.
-        if ([content lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > FDMBackupMaxScriptBytes) continue;
+        if (!identifier.length || !content.length) { if (error) *error = FDMRepoError(@"脚本记录损坏，未导出不完整备份"); return nil; }
+        if ([content lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > FDMBackupMaxScriptBytes || rows.count > FDMBackupMaxScripts) {
+            if (error) *error = FDMRepoError(@"脚本数量或原文超过备份预算，未截断导出"); return nil;
+        }
         NSMutableDictionary *script = [@{@"id": identifier, @"content": content} mutableCopy];
         for (NSString *key in FDMBackupScriptMetadataKeys()) {
             id value = row[FDMBackupScriptColumnForKey(key)];
@@ -201,7 +204,7 @@ static NSString *FDMBackupScriptColumnForKey(NSString *key) {
         NSString *identifier = FDMJSONStringValue(row[@"id"]);
         NSString *name = FDMJSONStringValue(row[@"name"]);
         NSString *content = FDMJSONStringValue(row[@"content"]);
-        if (!identifier.length || identifier.length > 128) { if (error) *error = FDMRepoError(@"脚本缺少有效标识"); return nil; }
+        if (!identifier.length || identifier.length > 128 || [identifier rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"] invertedSet]].location != NSNotFound) { if (error) *error = FDMRepoError(@"脚本缺少有效标识"); return nil; }
         if ([ids containsObject:identifier]) { if (error) *error = FDMRepoError(@"脚本标识重复"); return nil; }
         [ids addObject:identifier];
         if (!name.length || [name lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > FDMBackupMaxNameBytes) {
@@ -241,7 +244,7 @@ static NSString *FDMBackupScriptColumnForKey(NSString *key) {
         }
         [validated addObject:script];
     }
-    return validated;
+    return [validated copy];
 }
 
 - (NSDictionary<NSString *, NSNumber *> *)previewCountsForValidated:(id)validated error:(NSError **)error {
@@ -323,7 +326,11 @@ static NSString *FDMBackupScriptColumnForKey(NSString *key) {
     for (NSDictionary *script in FDMJSONArrayValue(FDMJSONObjectValue(beforeRoot)[@"scripts"])) afterByID[script[@"id"]] = script;
     for (NSString *identifier in toDelete) [afterByID removeObjectForKey:identifier];
     for (NSDictionary *script in toWrite) afterByID[script[@"id"]] = script;
-    NSData *after = FDMJSONCanonicalData(@{@"schemaVersion": @1, @"scripts": afterByID.allValues}, error);
+    // Sorted by uuid so the read-back bytes match a fresh export (which uses ORDER BY uuid).
+    NSArray *sortedScripts = [afterByID.allValues sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        return [a[@"id"] compare:b[@"id"]];
+    }];
+    NSData *after = FDMJSONCanonicalData(@{@"schemaVersion": @1, @"scripts": sortedScripts}, error);
     if (!after) return nil;
     staged.afterSnapshot = after;
     return staged;
@@ -358,80 +365,110 @@ static NSString *FDMBackupScriptColumnForKey(NSString *key) {
     return [self commitStaged:restore error:error] != nil;
 }
 
-// The host keeps two representations of a script: the SQL row and one generated .js file under
-// Tampermonkey.scriptPath. After the rows are committed, ask the host to rebuild its own cache and
-// regenerate each touched .js through its normal path, so we never write a half-built file.
-//
-// This is the ONLY place that may claim a script restore succeeded, and it must prove the .js file
-// actually exists and is readable. A silent log is not acceptable: verifyCommittedStateWithError:
-// turns a missing/unreadable .js into a failure that makes the coordinator roll back.
+// The host's .js file stores the original source (loadJsWithUUID: reads it and calls its parser).
+// Executor generation is delegated to the same UserScript model that the host's SQL query uses.
+- (NSString *)scriptDirectoryWithError:(NSError **)error {
+    Class cls = NSClassFromString(@"Tampermonkey"); SEL shared = NSSelectorFromString(@"shareInstance");
+    id manager = [cls respondsToSelector:shared] ? ((id (*)(id, SEL))objc_msgSend)(cls, shared) : nil;
+    NSString *directory = FDMString(FDMValue(manager, @"scriptPath"));
+    if (!directory.length) { if (error) *error = FDMRepoError(@"原生脚本目录不可用"); return nil; }
+    NSString *standard = directory.stringByStandardizingPath;
+    NSString *documents = FDMDocumentsPath().stringByStandardizingPath;
+    NSString *library = NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, YES).firstObject.stringByStandardizingPath;
+    if (![standard hasPrefix:[documents stringByAppendingString:@"/"]] && ![standard hasPrefix:[library stringByAppendingString:@"/"]]) {
+        if (error) *error = FDMRepoError(@"脚本目录不属于本应用配置范围"); return nil;
+    }
+    NSError *failure = nil;
+    if (![[NSFileManager defaultManager] createDirectoryAtPath:standard withIntermediateDirectories:YES attributes:nil error:&failure]) { if (error) *error = failure; return nil; }
+    if (![standard.stringByResolvingSymlinksInPath isEqual:standard]) { if (error) *error = FDMRepoError(@"脚本目录是符号链接，未写入"); return nil; }
+    return standard;
+}
+- (NSString *)fileNameForID:(NSString *)identifier {
+    if (!identifier.length || identifier.length > 128 || [identifier rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"] invertedSet]].location != NSNotFound) return nil;
+    return [[identifier stringByReplacingOccurrencesOfString:@"-" withString:@"_"] stringByAppendingString:@".js"];
+}
 - (BOOL)regenerateHostScriptFilesWithError:(NSError **)error {
-    Class tampermonkey = NSClassFromString(@"Tampermonkey");
-    SEL shared = NSSelectorFromString(@"shareInstance");
-    if (!tampermonkey || ![tampermonkey respondsToSelector:shared]) {
-        if (error) *error = FDMRepoError(@"当前版本无法重生成脚本文件");
-        return NO;
+    NSArray *rows = [self readRowsWithError:error]; if (!rows) return NO;
+    if (!rows.count) { _publishedModels = @[]; return YES; }
+    NSString *directory = [self scriptDirectoryWithError:error]; if (!directory) return NO;
+    Class cls = NSClassFromString(@"UserScript");
+    SEL initialize = NSSelectorFromString(@"initWithDictionary:error:"), fromSQL = NSSelectorFromString(@"jsonModelFromSql"), generate = NSSelectorFromString(@"updateExecutorJs");
+    if (!cls || ![cls instancesRespondToSelector:initialize] || ![cls instancesRespondToSelector:generate] || ![cls instancesRespondToSelector:fromSQL]) {
+        if (error) *error = FDMRepoError(@"宿主缺少已验证的用户脚本模型接口"); return NO;
     }
-    id manager = ((id (*)(id, SEL))objc_msgSend)((id)tampermonkey, shared);
-    if (!manager) { if (error) *error = FDMRepoError(@"脚本管理器不可用"); return NO; }
-    SEL all = NSSelectorFromString(@"getAllUserScriptsFromCache");
-    if (![manager respondsToSelector:all]) { if (error) *error = FDMRepoError(@"无法读取脚本缓存"); return NO; }
-    NSArray *cached = nil;
-    @try { cached = ((id (*)(id, SEL))objc_msgSend)(manager, all); }
-    @catch (NSException *exception) {
-        if (error) *error = FDMRepoError([NSString stringWithFormat:@"读取脚本缓存失败：%@", exception.reason]);
-        return NO;
-    }
-    if (![cached isKindOfClass:NSArray.class]) { if (error) *error = FDMRepoError(@"脚本缓存不可用"); return NO; }
-    SEL updateExecutor = NSSelectorFromString(@"updateExecutorJs");
-    SEL saveToCache = NSSelectorFromString(@"saveUserScriptToCache:");
-    BOOL regeneratedAny = NO;
-    for (id script in cached) {
-        if ([script respondsToSelector:updateExecutor]) {
-            @try { ((void (*)(id, SEL))objc_msgSend)(script, updateExecutor); }
-            @catch (NSException *exception) {
-                if (error) *error = FDMRepoError([NSString stringWithFormat:@"脚本执行代码重生成失败：%@", exception.reason]);
-                return NO;
-            }
-        }
-        if ([manager respondsToSelector:saveToCache]) {
-            @try { ((void (*)(id, SEL, id))objc_msgSend)(manager, saveToCache, script); }
-            @catch (NSException *exception) {
-                if (error) *error = FDMRepoError([NSString stringWithFormat:@"脚本缓存写入失败：%@", exception.reason]);
-                return NO;
-            }
-            regeneratedAny = YES;
-        }
-    }
-    // A host that cannot write the .js at all means the script restore is incomplete, not "done".
-    if (!regeneratedAny && cached.count) {
-        if (error) *error = FDMRepoError(@"脚本文件未能重生成；恢复已回滚");
-        return NO;
-    }
-    return YES;
-}
-
-- (void)reloadHostCache {
-    NSError *error = nil;
-    if (![self regenerateHostScriptFilesWithError:&error]) {
-        FDMLog(@"script file regeneration failed: %@", error.localizedDescription);
-    }
-}
-
-// Proves the restore is usable: every restored script must have readable content in the database,
-// and the host must be able to produce its .js representation.
-- (BOOL)verifyCommittedStateWithError:(NSError **)error {
-    NSArray *live = [self readRowsWithError:error];
-    if (!live) return NO;
-    for (NSDictionary *row in live) {
-        NSString *identifier = FDMJSONStringValue(row[@"uuid"]);
+    NSMutableArray *models = [NSMutableArray array];
+    for (NSDictionary *row in rows) {
+        NSString *name = [self fileNameForID:FDMJSONStringValue(row[@"uuid"])];
         NSString *content = FDMJSONStringValue(row[@"content"]);
-        if (!identifier.length) continue;
-        if (!content.length) {
-            if (error) *error = FDMRepoError([NSString stringWithFormat:@"脚本内容缺失：%@", identifier]);
-            return NO;
+        if (!name || !content.length) { if (error) *error = FDMRepoError(@"脚本内容或标识无效"); return NO; }
+        NSError *modelError = nil;
+        id model = ((id (*)(id, SEL, id, NSError **))objc_msgSend)([cls alloc], initialize, row, &modelError);
+        if (!model) { if (error) *error = FDMRepoError(@"原生脚本模型无法还原"); return NO; }
+        @try {
+            ((void (*)(id, SEL))objc_msgSend)(model, fromSQL);
+            ((void (*)(id, SEL))objc_msgSend)(model, generate);
+        } @catch (NSException *exception) { if (error) *error = FDMRepoError(@"脚本执行代码再生失败，恢复将回滚"); return NO; }
+        NSString *executor = FDMString(FDMValue(model, @"executorJs"));
+        if (!executor.length) { if (error) *error = FDMRepoError(@"宿主未生成脚本执行代码"); return NO; }
+        NSData *bytes = [content dataUsingEncoding:NSUTF8StringEncoding]; NSString *path = [directory stringByAppendingPathComponent:name];
+        NSNumber *symbolic = nil; [[NSURL fileURLWithPath:path] getResourceValue:&symbolic forKey:NSURLIsSymbolicLinkKey error:NULL];
+        if (symbolic.boolValue || ![bytes writeToFile:path options:NSDataWritingAtomic error:error]) return NO;
+        if (![FDMReadBoundedFile([NSURL fileURLWithPath:path], FDMBackupMaxScriptBytes, error) isEqual:bytes]) {
+            if (error) *error = FDMRepoError(@"脚本源文件读回不一致"); return NO;
         }
+        [models addObject:model];
     }
-    return [self regenerateHostScriptFilesWithError:error];
+    _publishedModels = [models copy]; return YES;
 }
+- (BOOL)verifyCommittedStateWithError:(NSError **)error { return [self regenerateHostScriptFilesWithError:error]; }
+- (void)reloadHostCache {
+    Class cls = NSClassFromString(@"Tampermonkey"); SEL shared = NSSelectorFromString(@"shareInstance"), clear = NSSelectorFromString(@"removeAllUserScriptsFromCache"), save = NSSelectorFromString(@"saveUserScriptToCache:");
+    id manager = [cls respondsToSelector:shared] ? ((id (*)(id, SEL))objc_msgSend)(cls, shared) : nil;
+    if (!_publishedModels || ![manager respondsToSelector:save]) return;
+    if ([manager respondsToSelector:clear]) ((void (*)(id, SEL))objc_msgSend)(manager, clear);
+    for (id model in _publishedModels) ((void (*)(id, SEL, id))objc_msgSend)(manager, save, model);
+    _publishedModels = nil;
+}
+- (NSData *)recoverySnapshotWithError:(NSError **)error {
+    NSData *sql = FDMRecoverySQLSnapshot(_database, @"t_userscript", FDMBackupScriptColumns(), error); if (!sql) return nil;
+    NSString *directory = [self scriptDirectoryWithError:error]; if (!directory) return nil;
+    NSMutableDictionary *files = [NSMutableDictionary dictionary];
+    NSArray *names = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:directory error:error]; if (!names) return nil;
+    NSUInteger total = 0;
+    for (NSString *name in names) {
+        if (![name.pathExtension isEqual:@"js"]) continue;
+        NSString *identifier = name.stringByDeletingPathExtension;
+        if (![self fileNameForID:identifier] || ![[self fileNameForID:identifier] isEqual:name]) continue;
+        NSData *bytes = FDMReadBoundedFile([NSURL fileURLWithPath:[directory stringByAppendingPathComponent:name]], FDMBackupMaxScriptBytes, error);
+        if (!bytes) return nil;
+        total += bytes.length; if (total > 16*1024*1024) { if (error) *error = FDMRepoError(@"本地脚本前像超出恢复预算"); return nil; }
+        files[name] = [bytes base64EncodedStringWithOptions:0];
+    }
+    return FDMJSONCanonicalData(@{@"recoverySchema": @2, @"sql": [sql base64EncodedStringWithOptions:0], @"files": files}, error);
+}
+- (BOOL)restoreRecoverySnapshot:(NSData *)snapshot error:(NSError **)error {
+    NSDictionary *root = FDMJSONObjectValue(FDMJSONParseDataBounded(snapshot, 32, 32*1024*1024, error));
+    if (![root[@"recoverySchema"] isEqual:@2] || ![root[@"sql"] isKindOfClass:NSString.class] || !FDMJSONObjectValue(root[@"files"])) return NO;
+    NSData *sql = [[NSData alloc] initWithBase64EncodedString:root[@"sql"] options:0]; if (!sql) return NO;
+    NSString *directory = [self scriptDirectoryWithError:error]; if (!directory) return NO;
+    NSArray *live = [self readRowsWithError:error]; if (!live) return NO;
+    NSMutableSet *newNames = [NSMutableSet set];
+    for (NSDictionary *row in live) { NSString *name = [self fileNameForID:row[@"uuid"]]; if (name) [newNames addObject:name]; }
+    for (NSString *name in root[@"files"]) {
+        if (![[self fileNameForID:name.stringByDeletingPathExtension] isEqual:name] || ![root[@"files"][name] isKindOfClass:NSString.class]) return NO;
+        NSData *bytes = [[NSData alloc] initWithBase64EncodedString:root[@"files"][name] options:0]; if (!bytes || bytes.length > FDMBackupMaxScriptBytes) return NO;
+        NSString *path = [directory stringByAppendingPathComponent:name];
+        if (![bytes writeToFile:path options:NSDataWritingAtomic error:error]) return NO;
+        if (![FDMReadBoundedFile([NSURL fileURLWithPath:path], FDMBackupMaxScriptBytes, error) isEqual:bytes]) return NO;
+        [newNames removeObject:name];
+    }
+    // Only current restored-row names introduced since this before-image can be removed.
+    for (NSString *name in newNames) {
+        NSString *path = [directory stringByAppendingPathComponent:name];
+        if ([[NSFileManager defaultManager] fileExistsAtPath:path] && ![[NSFileManager defaultManager] removeItemAtPath:path error:error]) return NO;
+    }
+    if (!FDMRecoverySQLRestore(_database, sql, @"t_userscript", FDMBackupScriptColumns(), error)) return NO;
+    _publishedModels = nil; return YES;
+}
+
 @end

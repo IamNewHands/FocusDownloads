@@ -41,6 +41,10 @@ FOUNDATION_EXPORT NSArray<NSString *> *FDMPolicyOverriddenFields(NSDictionary * 
 + (instancetype)shared;
 // Immutable snapshot: {schemaVersion, revision, origins}. Never returns nil.
 - (NSDictionary *)snapshot;
+// Recovery coordination: navigation/UI keep consuming the published before snapshot.
+- (NSDictionary *)transactionSnapshot;
+- (void)beginRecoveryPublication;
+- (void)finishRecoveryPublication:(BOOL)publish;
 - (unsigned long long)revision;
 - (nullable NSDictionary *)entryForOrigin:(NSString *)origin;
 - (BOOL)setEntry:(nullable NSDictionary *)entry origin:(NSString *)origin error:(NSError **)error;

@@ -6,6 +6,21 @@ static NSError *FDMBackupSQLError(NSString *message) {
     return [NSError errorWithDomain:@"FocusDM.Backup.SQL" code:1 userInfo:@{NSLocalizedDescriptionKey: message}];
 }
 
+// While a batch transaction is held, every statement on that queue must run on the already-open
+// connection. A repository that calls inDatabase: inside the batch would otherwise deadlock on
+// FMDB's serial queue. The active executor is therefore published per thread and reused.
+static NSString *const FDMBackupActiveExecutorKey = @"FocusDM.backup.activeExecutor";
+
+static void FDMBackupSetActiveExecutor(id<FDMBackupSQLExecutor> executor) {
+    NSMutableDictionary *thread = NSThread.currentThread.threadDictionary;
+    if (executor) thread[FDMBackupActiveExecutorKey] = executor;
+    else [thread removeObjectForKey:FDMBackupActiveExecutorKey];
+}
+
+static id<FDMBackupSQLExecutor> FDMBackupActiveExecutor(void) {
+    return NSThread.currentThread.threadDictionary[FDMBackupActiveExecutorKey];
+}
+
 BOOL FDMBackupTableColumns(id<FDMBackupSQLExecutor> executor,
                            NSString *table,
                            NSSet<NSString *> **columns,
@@ -136,42 +151,32 @@ BOOL FDMBackupTableColumns(id<FDMBackupSQLExecutor> executor,
 // Enters FMDB's serialized queue exactly once, so every statement in the batch runs on the same
 // connection inside one transaction. This is what prevents a database reader from observing a
 // half-applied multi-category restore.
-- (BOOL)performAtomicBatch:(void (^)(id<FDMBackupSQLAtomicAccess>))block error:(NSError **)error {
-    if (!block) { if (error) *error = FDMBackupSQLError(@"批次块为空"); return NO; }
-    SEL inDatabase = NSSelectorFromString(@"inDatabase:");
-    if (!_queue || ![_queue respondsToSelector:inDatabase]) {
-        if (error) *error = FDMBackupSQLError(@"宿主数据库队列不可用");
-        return NO;
-    }
-    __block BOOL committed = NO;
-    __block NSError *inner = nil;
-    ((void (*)(id, SEL, void (^)(id)))objc_msgSend)(_queue, inDatabase, ^(id database) {
-        FDMHostSQLExecutor *executor = [[FDMHostSQLExecutor alloc] initWithDatabase:database];
-        NSError *beginError = nil;
-        if (![executor update:@"BEGIN IMMEDIATE TRANSACTION" parameters:nil error:&beginError]) {
-            inner = beginError ?: FDMBackupSQLError(@"无法开始事务");
-            return;
-        }
-        FDMHostAtomicAccess *access = [[FDMHostAtomicAccess alloc] initWithExecutor:executor];
-        @try { block(access); }
-        @catch (NSException *exception) {
-            inner = FDMBackupSQLError([NSString stringWithFormat:@"批次中止：%@", exception.reason]);
-            [access rollback];
-            return;
-        }
-        NSError *commitError = nil;
-        if ([access commitWithError:&commitError]) committed = YES;
-        else {
-            // COMMIT failed: roll back so nothing partial becomes visible.
-            [executor update:@"ROLLBACK" parameters:nil error:NULL];
-            inner = commitError ?: FDMBackupSQLError(@"提交失败，已回滚");
-        }
+- (BOOL)performExclusiveAccess:(BOOL (^)(void))block error:(NSError **)error {
+    if (FDMBackupActiveExecutor()) return block();
+    SEL selector = NSSelectorFromString(@"inDatabase:");
+    if (![_queue respondsToSelector:selector]) { if (error) *error = FDMBackupSQLError(@"数据库不可用"); return NO; }
+    __block BOOL result = NO; __block NSError *failure = nil;
+    ((void (*)(id, SEL, void (^)(id)))objc_msgSend)(_queue, selector, ^(id database) {
+        id<FDMBackupSQLExecutor> executor = [[FDMHostSQLExecutor alloc] initWithDatabase:database];
+        FDMBackupSetActiveExecutor(executor);
+        @try { result = block(); }
+        @catch (NSException *exception) { failure = FDMBackupSQLError(@"配置批次发生异常，保留恢复保护"); }
+        @finally { FDMBackupSetActiveExecutor(nil); }
     });
-    if (!committed) {
-        if (error) *error = inner ?: FDMBackupSQLError(@"事务未提交");
-        return NO;
-    }
-    return YES;
+    if (!result && error && failure) *error = failure; return result;
+}
+- (BOOL)performAtomicBatch:(void (^)(id<FDMBackupSQLAtomicAccess>))block error:(NSError **)error {
+    __block BOOL result = NO; __block NSError *failure = nil;
+    [self performExclusiveAccess:^BOOL {
+        id<FDMBackupSQLExecutor> executor = FDMBackupActiveExecutor();
+        if (![executor update:@"BEGIN IMMEDIATE" parameters:nil error:&failure]) return NO;
+        FDMHostAtomicAccess *access = [[FDMHostAtomicAccess alloc] initWithExecutor:executor];
+        @try { block(access); result = [access commitWithError:&failure]; }
+        @catch (NSException *exception) { result = NO; failure = FDMBackupSQLError(@"数据库批次异常"); }
+        if (!result) [executor update:@"ROLLBACK" parameters:nil error:NULL];
+        return result;
+    } error:&failure];
+    if (!result && error) *error = failure; return result;
 }
 
 + (instancetype)hostQueueWithError:(NSError **)error {
@@ -199,6 +204,10 @@ BOOL FDMBackupTableColumns(id<FDMBackupSQLExecutor> executor,
 
 - (void)inDatabase:(void (^)(id<FDMBackupSQLExecutor>))block {
     if (!block) return;
+    // Inside a held batch, reuse the already-open connection instead of re-entering the queue
+    // (re-entering FMDB's serial queue from its own block would deadlock).
+    id<FDMBackupSQLExecutor> active = FDMBackupActiveExecutor();
+    if (active) { block(active); return; }
     SEL selector = NSSelectorFromString(@"inDatabase:");
     if (!_queue || ![_queue respondsToSelector:selector]) return;
     ((void (*)(id, SEL, void (^)(id)))objc_msgSend)(_queue, selector, ^(id database) {
@@ -356,71 +365,45 @@ static void FDMFixtureBind(sqlite3_stmt *statement, NSArray *parameters) {
     return ok;
 }
 
+- (BOOL)performExclusiveAccess:(BOOL (^)(void))block error:(NSError **)error {
+    if (FDMBackupActiveExecutor()) return block();
+    __block BOOL ok = NO; __block NSError *failure = nil;
+    dispatch_sync(_queue, ^{
+        FDMBackupSetActiveExecutor([[FDMSQLiteFixtureExecutor alloc] initWithHandle:_handle]);
+        @try { ok = block(); } @catch (NSException *exception) { failure = FDMBackupSQLError(@"夹具批次异常"); }
+        @finally { FDMBackupSetActiveExecutor(nil); }
+    });
+    if (!ok && error && failure) *error = failure; return ok;
+}
 - (void)inDatabase:(void (^)(id<FDMBackupSQLExecutor>))block {
-    if (!block) return;
-    dispatch_sync(_queue, ^{
-        block([[FDMSQLiteFixtureExecutor alloc] initWithHandle:self->_handle]);
-    });
+    [self performExclusiveAccess:^BOOL { block(FDMBackupActiveExecutor()); return YES; } error:NULL];
 }
-
 - (BOOL)inTransaction:(BOOL (^)(id<FDMBackupSQLExecutor>))block error:(NSError **)error {
-    if (!block) { if (error) *error = FDMBackupSQLError(@"事务块为空"); return NO; }
-    __block BOOL committed = NO;
-    __block NSError *failure = nil;
-    dispatch_sync(_queue, ^{
-        if (sqlite3_exec(self->_handle, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
-            failure = FDMBackupSQLError(@"无法开始事务");
-            return;
-        }
-        FDMSQLiteFixtureExecutor *executor = [[FDMSQLiteFixtureExecutor alloc] initWithHandle:self->_handle];
-        BOOL ok = NO;
-        @try { ok = block(executor); }
-        @catch (NSException *exception) {
-            failure = FDMBackupSQLError([NSString stringWithFormat:@"事务中止：%@", exception.reason]);
-            ok = NO;
-        }
-        if (ok) {
-            if (sqlite3_exec(self->_handle, "COMMIT", NULL, NULL, NULL) == SQLITE_OK) committed = YES;
-            else failure = FDMBackupSQLError(@"提交失败");
-        }
-        if (!committed) {
-            sqlite3_exec(self->_handle, "ROLLBACK", NULL, NULL, NULL);
-            if (!failure) failure = FDMBackupSQLError(@"事务已回滚");
-        }
-    });
-    if (!committed && error) *error = failure;
-    return committed;
+    __block BOOL ok = NO; __block NSError *failure = nil;
+    [self performExclusiveAccess:^BOOL {
+        id<FDMBackupSQLExecutor> executor = FDMBackupActiveExecutor();
+        if (![executor update:@"BEGIN IMMEDIATE" parameters:nil error:&failure]) return NO;
+        @try { ok = block(executor); } @catch (NSException *exception) { ok = NO; failure = FDMBackupSQLError(@"事务异常"); }
+        if (ok) ok = [executor update:@"COMMIT" parameters:nil error:&failure];
+        if (!ok) [executor update:@"ROLLBACK" parameters:nil error:NULL];
+        return ok;
+    } error:&failure];
+    if (!ok && error) *error = failure ?: FDMBackupSQLError(@"事务已回滚"); return ok;
+}
+- (BOOL)performAtomicBatch:(void (^)(id<FDMBackupSQLAtomicAccess>))block error:(NSError **)error {
+    __block BOOL ok = NO; __block NSError *failure = nil;
+    [self performExclusiveAccess:^BOOL {
+        id<FDMBackupSQLExecutor> executor = FDMBackupActiveExecutor();
+        if (![executor update:@"BEGIN IMMEDIATE" parameters:nil error:&failure]) return NO;
+        FDMSQLiteFixtureAccess *access = [[FDMSQLiteFixtureAccess alloc] initWithExecutor:(id)executor handle:_handle];
+        @try { block(access); ok = [access commitWithError:&failure]; }
+        @catch (NSException *exception) { ok = NO; failure = FDMBackupSQLError(@"事务异常"); }
+        if (!ok) [executor update:@"ROLLBACK" parameters:nil error:NULL];
+        return ok;
+    } error:&failure];
+    if (!ok && error) *error = failure; return ok;
 }
 
-// The fixture uses the same whole-batch contract so the repository/coordinator code under test is
-// identical to what runs against the host queue.
-- (BOOL)performAtomicBatch:(void (^)(id<FDMBackupSQLAtomicAccess>))block error:(NSError **)error {
-    if (!block) { if (error) *error = FDMBackupSQLError(@"批次块为空"); return NO; }
-    __block BOOL committed = NO;
-    __block NSError *failure = nil;
-    dispatch_sync(_queue, ^{
-        if (sqlite3_exec(self->_handle, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
-            failure = FDMBackupSQLError(@"无法开始事务");
-            return;
-        }
-        FDMSQLiteFixtureExecutor *executor = [[FDMSQLiteFixtureExecutor alloc] initWithHandle:self->_handle];
-        FDMSQLiteFixtureAccess *access = [[FDMSQLiteFixtureAccess alloc] initWithExecutor:executor handle:self->_handle];
-        @try { block(access); }
-        @catch (NSException *exception) {
-            failure = FDMBackupSQLError([NSString stringWithFormat:@"批次中止：%@", exception.reason]);
-            [access rollback];
-            return;
-        }
-        NSError *commitError = nil;
-        if ([access commitWithError:&commitError]) committed = YES;
-        else {
-            sqlite3_exec(self->_handle, "ROLLBACK", NULL, NULL, NULL);
-            failure = commitError ?: FDMBackupSQLError(@"提交失败，已回滚");
-        }
-    });
-    if (!committed && error) *error = failure;
-    return committed;
-}
 @end
 
 // Fixture counterpart of the host atomic access holder.

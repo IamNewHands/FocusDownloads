@@ -236,6 +236,19 @@ static BOOL FDMDidFinishLaunch(id self, SEL selector, UIApplication *application
     (void)FDMEngine.shared;
     // A previous restore may have been interrupted; settle it before any configuration is exposed.
     [FDMBackupCoordinator.shared recoverInterruptedTransaction];
+    if (FDMBackupCoordinator.shared.recoveryBlocked) {
+        UIWindow *window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+        UIViewController *controller = [UIViewController new]; controller.view.backgroundColor = UIColor.systemBackgroundColor;
+        UILabel *label = [UILabel new]; label.numberOfLines = 0;
+        label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody]; label.adjustsFontForContentSizeCategory = YES;
+        label.text = [@"配置恢复尚未完成，浏览器没有载入混合配置。\n\n" stringByAppendingString:FDMBackupCoordinator.shared.recoveryNotice ?: @"请重新打开应用重试恢复。"];
+        label.translatesAutoresizingMaskIntoConstraints = NO; [controller.view addSubview:label];
+        [NSLayoutConstraint activateConstraints:@[[label.leadingAnchor constraintEqualToAnchor:controller.view.safeAreaLayoutGuide.leadingAnchor constant:24],
+            [label.trailingAnchor constraintEqualToAnchor:controller.view.safeAreaLayoutGuide.trailingAnchor constant:-24],
+            [label.centerYAnchor constraintEqualToAnchor:controller.view.centerYAnchor]]];
+        window.rootViewController = controller; [self setValue:window forKey:@"window"]; [window makeKeyAndVisible];
+        return YES;
+    }
     BOOL result = FDMOriginalDidFinishLaunch ? ((BOOL (*)(id, SEL, id, id))FDMOriginalDidFinishLaunch)(self, selector, application, options) : YES;
     dispatch_async(dispatch_get_main_queue(), ^{ [FDMHostDownloads.shared refresh]; });
     return result;

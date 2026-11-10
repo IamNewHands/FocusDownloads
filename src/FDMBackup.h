@@ -92,6 +92,7 @@ FOUNDATION_EXPORT FDMBackupContainer * _Nullable FDMBackupDecode(NSData *data, N
 // Called at launch before any configuration is exposed. Idempotent.
 - (void)recoverInterruptedTransaction;
 @property (nonatomic, readonly, copy, nullable) NSString *recoveryNotice;
+@property (nonatomic, readonly) BOOL recoveryBlocked;
 @end
 
 NS_ASSUME_NONNULL_END

@@ -1,6 +1,7 @@
 #import "FDMBackupRepositoryImpl.h"
 #import "FDMBackupSQL.h"
 #import "FDMJSON.h"
+#import "FDMBackupRecovery.h"
 
 // Fixed facts of this host build, confirmed from the binary:
 //   SearchListManager init: [[NSUserDefaults alloc] initWithSuiteName:@"com.focus.searchlist"]
@@ -57,9 +58,42 @@ static NSError *FDMRepoError(NSString *message) {
     return NO;
 }
 
-// The stored value is an array of dictionaries produced by SearchModel.toDictionary. Only the fields
-// the host actually round-trips are kept; unknown keys are refused so a foreign file cannot inject
-// arbitrary defaults into the host model.
+// The host stores SearchModel dictionaries whose identity field is `uuid` and selection flag is
+// `isSelected`. The portable DTO uses `id` and `selected`, so every write path must translate both
+// or the host will read engines with no identity and no selection.
+static NSDictionary *FDMBackupSearchHostRow(NSDictionary *portable) {
+    NSMutableDictionary *row = [NSMutableDictionary dictionary];
+    NSString *identifier = portable[@"id"];
+    if (identifier.length) row[@"uuid"] = identifier;
+    row[@"title"] = portable[@"title"] ?: @"";
+    row[@"searchUrl"] = portable[@"searchUrl"] ?: @"";
+    if (portable[@"suggestUrl"]) row[@"suggestUrl"] = portable[@"suggestUrl"];
+    if (portable[@"type"]) row[@"type"] = portable[@"type"];
+    if (portable[@"position"]) row[@"position"] = portable[@"position"];
+    if (portable[@"selected"]) row[@"isSelected"] = @([portable[@"selected"] boolValue]);
+    return row;
+}
+
+// Full structural comparison, not a count: two different engine sets can share a count.
+static BOOL FDMBackupSearchRowsEquivalent(NSArray *left, NSArray *right) {
+    if (left.count != right.count) return NO;
+    NSMutableDictionary *byURL = [NSMutableDictionary dictionary];
+    for (NSDictionary *row in left) {
+        NSString *url = FDMJSONStringValue(row[@"searchUrl"]);
+        if (url.length) byURL[url] = row;
+    }
+    for (NSDictionary *row in right) {
+        NSString *url = FDMJSONStringValue(row[@"searchUrl"]);
+        if (!url.length) return NO;
+        NSDictionary *other = byURL[url];
+        if (!other) return NO;
+        if (![FDMJSONStringValue(other[@"title"]) isEqual:FDMJSONStringValue(row[@"title"])]) return NO;
+        NSString *a = FDMJSONStringValue(other[@"suggestUrl"]) ?: @"";
+        NSString *b = FDMJSONStringValue(row[@"suggestUrl"]) ?: @"";
+        if (![a isEqual:b]) return NO;
+    }
+    return YES;
+}
 - (NSArray<NSDictionary *> *)rawEngines {
     id value = [_defaults arrayForKey:FDMBackupSearchKey];
     return [value isKindOfClass:NSArray.class] ? value : @[];
@@ -85,7 +119,7 @@ static NSError *FDMRepoError(NSString *message) {
         // isSelected is host state, not user configuration; it is exported so a restore can report
         // it, but a restore never changes which engine is currently selected.
         id selected = row[@"isSelected"];
-        if ([selected isKindOfClass:NSNumber.class]) engine[@"selected"] = selected;
+        if ([selected isKindOfClass:NSNumber.class]) engine[@"selected"] = @([selected boolValue]);
         [engines addObject:engine];
     }
     NSData *payload = FDMJSONCanonicalData(@{@"schemaVersion": @1, @"engines": engines}, error);
@@ -115,6 +149,7 @@ static NSError *FDMRepoError(NSString *message) {
     if (!engines || engines.count > 100) { if (error) *error = FDMRepoError(@"搜索引擎数量无效"); return nil; }
     NSMutableArray *validated = [NSMutableArray array];
     NSMutableSet *urls = [NSMutableSet set];
+    NSMutableSet *identifiers = [NSMutableSet set];
     for (id raw in engines) {
         NSDictionary *row = FDMJSONObjectValue(raw);
         if (!row) { if (error) *error = FDMRepoError(@"搜索引擎条目无效"); return nil; }
@@ -145,7 +180,8 @@ static NSError *FDMRepoError(NSString *message) {
         [urls addObject:url];
         NSMutableDictionary *engine = [@{@"title": title, @"searchUrl": url} mutableCopy];
         NSString *identifier = FDMJSONStringValue(row[@"id"]);
-        if (identifier.length) engine[@"id"] = identifier;
+        if (!identifier.length || identifier.length > 128 || [identifiers containsObject:identifier]) { if (error) *error = FDMRepoError(@"搜索引擎稳定标识缺失或重复"); return nil; }
+        [identifiers addObject:identifier]; engine[@"id"] = identifier;
         NSString *suggest = FDMJSONStringValue(row[@"suggestUrl"]);
         if (suggest.length) {
             if ([suggest lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > FDMBackupMaxURLBytes) {
@@ -161,7 +197,7 @@ static NSError *FDMRepoError(NSString *message) {
                 engine[key] = @(number);
             }
         }
-        if ([row[@"selected"] isKindOfClass:NSNumber.class] && CFGetTypeID((__bridge CFTypeRef)row[@"selected"]) != CFBooleanGetTypeID()) {
+        if (row[@"selected"] && (![row[@"selected"] isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)row[@"selected"]) != CFBooleanGetTypeID())) {
             if (error) *error = FDMRepoError(@"selected 必须是布尔值");
             return nil;
         }
@@ -191,117 +227,82 @@ static NSError *FDMRepoError(NSString *message) {
 }
 
 - (id)stageMergeValidated:(id)validated replace:(BOOL)replace error:(NSError **)error {
-    if (!_defaults) { if (error) *error = FDMRepoError(@"搜索配置不可用"); return nil; }
-    NSData *before = [self exportSnapshotWithRevision:NULL error:error];
-    if (!before) return nil;
-    NSMutableArray *merged = [NSMutableArray array];
-    NSMutableDictionary *liveByURL = [NSMutableDictionary dictionary];
-    NSMutableArray *liveOrder = [NSMutableArray array];
-    for (id raw in [self rawEngines]) {
-        NSDictionary *row = FDMJSONObjectValue(raw);
-        if (!row) continue;
-        NSString *url = FDMJSONStringValue(row[@"searchUrl"]);
-        if (url.length) liveByURL[url] = row;
-        [liveOrder addObject:row];
+    NSData *before = [self exportSnapshotWithRevision:NULL error:error]; if (!before) return nil;
+    NSArray *raw = [self rawEngines];
+    NSMutableArray *after = replace ? [NSMutableArray array] : [raw mutableCopy];
+    NSMutableDictionary *known = [NSMutableDictionary dictionary];
+    NSDictionary *selected = nil;
+    for (NSDictionary *row in raw) {
+        NSString *identifier = FDMJSONStringValue(row[@"uuid"]);
+        if (identifier.length) known[identifier] = row;
+        if ([row[@"isSelected"] boolValue]) selected = row;
     }
-    NSMutableSet *importedURLs = [NSMutableSet set];
-    for (NSDictionary *engine in validated) [importedURLs addObject:engine[@"searchUrl"]];
-
-    if (replace) {
-        // Replace only the engines the backup carries; the selected engine stays selected if it
-        // still exists, otherwise the host keeps its own default.
-        for (NSDictionary *engine in validated) {
-            NSMutableDictionary *copy = [engine mutableCopy];
-            [copy removeObjectForKey:@"selected"];
-            [merged addObject:copy];
+    for (NSDictionary *incoming in validated) {
+        NSString *identifier = incoming[@"id"];
+        NSDictionary *local = known[identifier];
+        if (!replace && local) continue;
+        NSMutableDictionary *row = [FDMBackupSearchHostRow(incoming) mutableCopy];
+        if (!identifier.length) row[@"uuid"] = NSUUID.UUID.UUIDString;
+        row[@"isSelected"] = @NO;
+        [after addObject:row];
+    }
+    if (selected) {
+        BOOL found = NO;
+        for (NSUInteger i=0;i<after.count;i++) {
+            NSMutableDictionary *row = [after[i] mutableCopy];
+            BOOL same = [row[@"uuid"] isEqual:selected[@"uuid"]]; row[@"isSelected"] = @(same);
+            if (same) found = YES; after[i] = row;
         }
-    } else {
-        // keep-local: preserve every live engine in its order, then append engines that are new.
-        for (NSDictionary *row in liveOrder) {
-            NSMutableDictionary *copy = [row mutableCopy];
-            [copy removeObjectForKey:@"selected"];
-            [merged addObject:copy];
-        }
-        for (NSDictionary *engine in validated) {
-            if (liveByURL[engine[@"searchUrl"]]) continue;
-            NSMutableDictionary *copy = [engine mutableCopy];
-            [copy removeObjectForKey:@"selected"];
-            [merged addObject:copy];
+        // Replacement does not silently switch the user's default engine.
+        if (!found) [after addObject:selected];
+    } else if (replace) {
+        for (NSDictionary *incoming in validated) if ([incoming[@"selected"] boolValue]) {
+            for (NSMutableDictionary *row in after) if ([row[@"uuid"] isEqual:incoming[@"id"]]) row[@"isSelected"] = @YES;
         }
     }
-    // Keep the current selection by URL so a restore never silently changes the user's default.
-    NSString *selectedURL = nil;
-    for (NSDictionary *row in liveOrder) {
-        if ([row[@"isSelected"] boolValue]) { selectedURL = FDMJSONStringValue(row[@"searchUrl"]); break; }
+    NSMutableArray *portable = [NSMutableArray array];
+    for (NSDictionary *row in after) {
+        NSMutableDictionary *item = [@{@"id": row[@"uuid"] ?: @"", @"title": row[@"title"] ?: @"",
+            @"searchUrl": row[@"searchUrl"] ?: @"", @"selected": @([row[@"isSelected"] boolValue])} mutableCopy];
+        for (NSString *key in @[@"suggestUrl", @"type", @"position"]) if (row[key]) item[key] = row[key];
+        [portable addObject:item];
     }
-    BOOL selectionPresent = NO;
-    for (NSMutableDictionary *row in merged) if ([row[@"searchUrl"] isEqual:selectedURL]) selectionPresent = YES;
-    if (selectedURL.length && selectionPresent) {
-        for (NSMutableDictionary *row in merged) row[@"isSelected"] = @([row[@"searchUrl"] isEqual:selectedURL]);
-    }
-
-    FDMBackupBlobStagedSet *staged = [[FDMBackupBlobStagedSet alloc] init];
-    staged.beforeSnapshot = before;
-    staged.beforeBlob = [_defaults arrayForKey:FDMBackupSearchKey];
-    staged.afterBlob = merged;
-    NSMutableArray *afterItems = [NSMutableArray array];
-    for (NSDictionary *row in merged) {
-        NSMutableDictionary *copy = [row mutableCopy];
-        [copy removeObjectForKey:@"isSelected"];
-        [afterItems addObject:copy];
-    }
-    NSData *after = FDMJSONCanonicalData(@{@"schemaVersion": @1, @"engines": afterItems}, error);
-    if (!after) return nil;
-    staged.afterSnapshot = after;
-    return staged;
+    FDMBackupBlobStagedSet *set = [FDMBackupBlobStagedSet new]; set.beforeSnapshot = before;
+    set.beforeBlob = [_defaults arrayForKey:FDMBackupSearchKey]; set.afterBlob = [after copy];
+    set.afterSnapshot = FDMJSONCanonicalData(@{@"schemaVersion": @1, @"engines": portable}, error);
+    return set.afterSnapshot ? set : nil;
 }
-
 - (NSData *)commitStaged:(id)staged error:(NSError **)error {
     FDMBackupBlobStagedSet *set = staged;
-    if (![set isKindOfClass:FDMBackupBlobStagedSet.class]) { if (error) *error = FDMRepoError(@"暂存集无效"); return nil; }
-    if (!_defaults) { if (error) *error = FDMRepoError(@"搜索配置不可用"); return nil; }
-    [_defaults setObject:set.afterBlob forKey:FDMBackupSearchKey];
-    if (![_defaults synchronize]) { if (error) *error = FDMRepoError(@"搜索配置写入未确认"); return nil; }
-    // Verify by reading the value back: synchronize's return is not a durability proof.
-    NSArray *readBack = [_defaults arrayForKey:FDMBackupSearchKey];
-    if (![readBack isKindOfClass:NSArray.class] || readBack.count != [set.afterBlob count]) {
-        if (error) *error = FDMRepoError(@"搜索配置读回校验失败");
-        return nil;
-    }
+    if (![set isKindOfClass:FDMBackupBlobStagedSet.class]) { if (error) *error = FDMRepoError(@"搜索暂存集无效"); return nil; }
+    [_defaults setObject:set.afterBlob forKey:FDMBackupSearchKey]; [_defaults synchronize];
+    if (![[_defaults arrayForKey:FDMBackupSearchKey] isEqual:set.afterBlob]) { if (error) *error = FDMRepoError(@"搜索配置读回不一致"); return nil; }
     return set.afterSnapshot;
 }
-
 - (id)stageRestoreSnapshot:(NSData *)snapshot error:(NSError **)error {
-    id validated = [self validateImportPayload:snapshot error:error];
-    if (!validated) return nil;
-    FDMBackupBlobStagedSet *set = [[FDMBackupBlobStagedSet alloc] init];
-    set.beforeSnapshot = [self exportSnapshotWithRevision:NULL error:NULL] ?: [NSData data];
-    set.beforeBlob = [_defaults arrayForKey:FDMBackupSearchKey];
-    NSMutableArray *rows = [NSMutableArray array];
-    for (NSDictionary *engine in validated) {
-        NSMutableDictionary *copy = [engine mutableCopy];
-        [copy removeObjectForKey:@"selected"];
-        [rows addObject:copy];
-    }
-    set.afterBlob = rows;
-    set.afterSnapshot = snapshot;
-    return set;
+    NSArray *validated = [self validateImportPayload:snapshot error:error]; if (!validated) return nil;
+    FDMBackupBlobStagedSet *set = [FDMBackupBlobStagedSet new];
+    set.beforeSnapshot = [self exportSnapshotWithRevision:NULL error:error]; set.beforeBlob = [_defaults arrayForKey:FDMBackupSearchKey];
+    NSMutableArray *rows = [NSMutableArray array]; for (NSDictionary *engine in validated) [rows addObject:FDMBackupSearchHostRow(engine)];
+    set.afterBlob = rows; set.afterSnapshot = snapshot; return set;
 }
-
 - (BOOL)rollbackStaged:(id)staged error:(NSError **)error {
     FDMBackupBlobStagedSet *set = staged;
-    if (![set isKindOfClass:FDMBackupBlobStagedSet.class]) { if (error) *error = FDMRepoError(@"暂存集无效"); return NO; }
-    if (!_defaults) { if (error) *error = FDMRepoError(@"搜索配置不可用"); return NO; }
-    if (set.beforeBlob) [_defaults setObject:set.beforeBlob forKey:FDMBackupSearchKey];
-    else [_defaults removeObjectForKey:FDMBackupSearchKey];
+    if (set.beforeBlob) [_defaults setObject:set.beforeBlob forKey:FDMBackupSearchKey]; else [_defaults removeObjectForKey:FDMBackupSearchKey];
     [_defaults synchronize];
-    NSArray *readBack = [_defaults arrayForKey:FDMBackupSearchKey];
-    NSUInteger expected = set.beforeBlob ? [set.beforeBlob count] : 0;
-    if ((readBack ? readBack.count : 0) != expected) {
-        if (error) *error = FDMRepoError(@"搜索配置回滚读回校验失败");
-        return NO;
-    }
-    return YES;
+    return set.beforeBlob ? [[_defaults arrayForKey:FDMBackupSearchKey] isEqual:set.beforeBlob] : [_defaults objectForKey:FDMBackupSearchKey] == nil;
+}
+- (NSData *)recoverySnapshotWithError:(NSError **)error {
+    id raw = [_defaults objectForKey:FDMBackupSearchKey];
+    if (raw && ![raw isKindOfClass:NSArray.class]) { if (error) *error = FDMRepoError(@"原搜索配置格式未知"); return nil; }
+    return FDMJSONCanonicalData(@{@"recoverySchema": @1, @"raw": raw ?: NSNull.null}, error);
+}
+- (BOOL)restoreRecoverySnapshot:(NSData *)snapshot error:(NSError **)error {
+    NSDictionary *root = FDMJSONObjectValue(FDMJSONParseData(snapshot, error));
+    if (![root[@"recoverySchema"] isEqual:@1] || (!FDMJSONArrayValue(root[@"raw"]) && root[@"raw"] != NSNull.null)) return NO;
+    if (root[@"raw"] == NSNull.null) [_defaults removeObjectForKey:FDMBackupSearchKey]; else [_defaults setObject:root[@"raw"] forKey:FDMBackupSearchKey];
+    [_defaults synchronize];
+    return root[@"raw"] == NSNull.null ? [_defaults objectForKey:FDMBackupSearchKey] == nil : [[_defaults objectForKey:FDMBackupSearchKey] isEqual:root[@"raw"]];
 }
 
 - (void)reloadHostCache {

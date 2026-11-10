@@ -40,7 +40,7 @@ static NSError *FDMRepoError(NSString *message) {
 
 - (NSData *)exportSnapshotWithRevision:(NSString **)revision error:(NSError **)error {
     if (!FDMSitePolicyStore.shared.writable) { if (error) *error = FDMRepoError(@"站点规则文件不可写或格式未知"); return nil; }
-    NSDictionary *snapshot = FDMSitePolicyStore.shared.snapshot;
+    NSDictionary *snapshot = FDMSitePolicyStore.shared.transactionSnapshot;
     NSData *payload = FDMJSONCanonicalData(snapshot, error);
     if (payload && revision) *revision = FDMBackupSHA256(payload);
     return payload;
@@ -71,7 +71,7 @@ static NSError *FDMRepoError(NSString *message) {
 }
 
 - (NSDictionary<NSString *, NSNumber *> *)previewCountsForValidated:(id)validated error:(NSError **)error {
-    NSDictionary *current = FDMSitePolicyStore.shared.snapshot[@"origins"] ?: @{};
+    NSDictionary *current = FDMSitePolicyStore.shared.transactionSnapshot[@"origins"] ?: @{};
     NSUInteger added = 0, identical = 0, conflict = 0, downgraded = 0;
     for (NSString *origin in validated[@"origins"]) {
         NSDictionary *incoming = validated[@"origins"][origin];
@@ -86,7 +86,7 @@ static NSError *FDMRepoError(NSString *message) {
 }
 
 - (id)stageMergeValidated:(id)validated replace:(BOOL)replace error:(NSError **)error {
-    NSDictionary *snapshot = FDMSitePolicyStore.shared.snapshot;
+    NSDictionary *snapshot = FDMSitePolicyStore.shared.transactionSnapshot;
     NSDictionary *before = FDMJSONObjectValue(FDMJSONParseData(FDMJSONCanonicalData(snapshot, NULL), NULL)) ?: snapshot;
     NSMutableDictionary *origins = replace ? [NSMutableDictionary dictionary]
                                            : ([before[@"origins"] mutableCopy] ?: [NSMutableDictionary dictionary]);
@@ -121,7 +121,8 @@ static NSError *FDMRepoError(NSString *message) {
     if (![set isKindOfClass:FDMBackupPolicyStagedSet.class]) { if (error) *error = FDMRepoError(@"暂存集无效"); return nil; }
     // The store performs its own atomic write and revision check; a concurrent change is refused.
     // publish:YES notifies the host once, which is what a user-visible restore wants.
-    if (![FDMSitePolicyStore.shared restoreDocument:set.afterDocument publish:YES error:error]) return nil;
+    if (FDMSitePolicyStore.shared.revision != set.expectedRevision) { if (error) *error = FDMRepoError(@"站点规则在暂存后已改变，请重新预览"); return nil; }
+    if (![FDMSitePolicyStore.shared restoreDocument:set.afterDocument publish:NO error:error]) return nil;
     return set.afterSnapshot;
 }
 
@@ -134,11 +135,11 @@ static NSError *FDMRepoError(NSString *message) {
     // Strict structural validation, but without the import-time permission downgrade.
     NSDictionary *document = FDMSitePolicyValidateDocument(root, error);
     if (!document) return nil;
-    NSDictionary *before = FDMSitePolicyStore.shared.snapshot;
+    NSDictionary *before = FDMSitePolicyStore.shared.transactionSnapshot;
     unsigned long long beforeRevision = [before[@"revision"] unsignedLongLongValue];
     // The store's write path increments the revision, so we stage the exact target revision and let
     // the caller's expected value be the live one.
-    NSDictionary *after = @{@"schemaVersion": @1, @"revision": @(beforeRevision), @"origins": document[@"origins"]};
+    NSDictionary *after = document;
     FDMBackupPolicyStagedSet *staged = [[FDMBackupPolicyStagedSet alloc] init];
     staged.beforeDocument = before;
     staged.afterDocument = after;
@@ -150,6 +151,11 @@ static NSError *FDMRepoError(NSString *message) {
     return staged;
 }
 
+- (NSData *)recoverySnapshotWithError:(NSError **)error { return [self exportSnapshotWithRevision:NULL error:error]; }
+- (BOOL)restoreRecoverySnapshot:(NSData *)snapshot error:(NSError **)error {
+    NSDictionary *document = FDMSitePolicyValidateDocument(FDMJSONParseData(snapshot, error), error);
+    return document && [FDMSitePolicyStore.shared restoreDocument:document publish:NO error:error];
+}
 - (BOOL)rollbackStaged:(id)staged error:(NSError **)error {
     FDMBackupPolicyStagedSet *set = staged;
     if (![set isKindOfClass:FDMBackupPolicyStagedSet.class]) { if (error) *error = FDMRepoError(@"暂存集无效"); return NO; }
@@ -158,7 +164,7 @@ static NSError *FDMRepoError(NSString *message) {
     NSDictionary *exact = set.exactBeforeDocument ?: set.beforeDocument;
     if (!exact) { if (error) *error = FDMRepoError(@"原站点策略快照不可用，回滚未完成"); return NO; }
     if (![FDMSitePolicyStore.shared restoreDocument:exact publish:NO error:error]) return NO;
-    NSDictionary *live = FDMSitePolicyStore.shared.snapshot;
+    NSDictionary *live = FDMSitePolicyStore.shared.transactionSnapshot;
     if (![live[@"origins"] isEqual:(exact[@"origins"] ?: @{})]) {
         if (error) *error = FDMRepoError(@"站点策略回滚读回不一致");
         return NO;
@@ -167,7 +173,9 @@ static NSError *FDMRepoError(NSString *message) {
 }
 
 - (void)reloadHostCache {
-    // The store publishes FDMSitePolicyDidChangeNotification itself on commit.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSNotificationCenter.defaultCenter postNotificationName:FDMSitePolicyDidChangeNotification object:nil];
+    });
 }
 
 - (BOOL)verifyCommittedStateWithError:(NSError **)error {
@@ -176,7 +184,7 @@ static NSError *FDMRepoError(NSString *message) {
         return NO;
     }
     // The store always increments the revision, so completeness is judged on the origins only.
-    NSDictionary *snapshot = FDMSitePolicyStore.shared.snapshot;
+    NSDictionary *snapshot = FDMSitePolicyStore.shared.transactionSnapshot;
     NSDictionary *origins = FDMJSONObjectValue(snapshot[@"origins"]);
     if (!origins) { if (error) *error = FDMRepoError(@"站点规则读回失败"); return NO; }
     return YES;

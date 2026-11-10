@@ -1,6 +1,7 @@
 #import "FDMBackupRepositoryImpl.h"
 #import "FDMBackupSQL.h"
 #import "FDMJSON.h"
+#import "FDMBackupRecovery.h"
 #import "FDMPolicy.h"
 
 NSString *const FDMBackupCountAdded = @"added";
@@ -29,8 +30,14 @@ static BOOL FDMRepoBoundedString(id value, NSUInteger maxBytes, BOOL required, N
     return YES;
 }
 
-// An integer field that must not be a boolean; SQLite stores booleans as 0/1 but the portable
-// payload must not accept `true` where a number is expected.
+// The after snapshot must be byte-identical to what exportSnapshot would produce next time, so it is
+// always rebuilt by sorting items by stable ID exactly like the SQL ORDER BY in readRowsWithError:.
+static NSData *FDMBackupSortedItemsPayload(NSDictionary<NSString *, NSDictionary *> *byID, NSError **error) {
+    NSArray *sorted = [byID.allValues sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        return [a[@"id"] compare:b[@"id"]];
+    }];
+    return FDMJSONCanonicalData(@{@"schemaVersion": @1, @"items": sorted}, error);
+}
 static BOOL FDMRepoInteger(id value, long long minimum, long long maximum, long long *out, NSError **error, NSString *label) {
     if (!FDMJSONNonNegativeInteger(value, (unsigned long long)maximum, NULL) && [value isKindOfClass:NSNumber.class]) {
         // fall through to the signed check below
@@ -321,14 +328,13 @@ static BOOL FDMValidateMergedTree(NSDictionary<NSString *, NSString *> *parentOf
     staged.rowsToWrite = toWrite;
     staged.idsToDelete = toDelete;
     // The after snapshot is the before snapshot with the written rows applied and deleted rows gone.
-    NSMutableArray *afterItems = [NSMutableArray array];
+    // It must be sorted by stable ID, because the read-back compares these bytes with a fresh export.
     NSMutableDictionary *afterByID = [NSMutableDictionary dictionary];
     id beforeRoot = FDMJSONParseData(before, NULL);
     for (NSDictionary *item in FDMJSONArrayValue(FDMJSONObjectValue(beforeRoot)[@"items"])) afterByID[item[@"id"]] = item;
     for (NSString *identifier in toDelete) [afterByID removeObjectForKey:identifier];
     for (NSDictionary *item in toWrite) afterByID[item[@"id"]] = item;
-    for (NSDictionary *item in afterByID.allValues) [afterItems addObject:item];
-    NSData *after = FDMJSONCanonicalData(@{@"schemaVersion": @1, @"items": afterItems}, error);
+    NSData *after = FDMBackupSortedItemsPayload(afterByID, error);
     if (!after) return nil;
     staged.afterSnapshot = after;
     return staged;
@@ -415,6 +421,12 @@ static BOOL FDMValidateMergedTree(NSDictionary<NSString *, NSString *> *parentOf
     return set;
 }
 
+- (NSData *)recoverySnapshotWithError:(NSError **)error {
+    return FDMRecoverySQLSnapshot(self.database, self.tableName, self.columns, error);
+}
+- (BOOL)restoreRecoverySnapshot:(NSData *)snapshot error:(NSError **)error {
+    return FDMRecoverySQLRestore(self.database, snapshot, self.tableName, self.columns, error);
+}
 - (BOOL)rollbackStaged:(id)staged error:(NSError **)error {
     FDMBackupSQLStagedSet *set = staged;
     if (![set isKindOfClass:FDMBackupSQLStagedSet.class]) { if (error) *error = FDMRepoError(@"暂存集无效"); return NO; }
@@ -609,7 +621,7 @@ static BOOL FDMBackupHomeTagTypeIsReserved(NSNumber *type) {
     for (NSDictionary *item in FDMJSONArrayValue(FDMJSONObjectValue(beforeRoot)[@"items"])) afterByID[item[@"id"]] = item;
     for (NSString *identifier in toDelete) [afterByID removeObjectForKey:identifier];
     for (NSDictionary *item in toWrite) afterByID[item[@"id"]] = item;
-    NSData *after = FDMJSONCanonicalData(@{@"schemaVersion": @1, @"items": afterByID.allValues}, error);
+    NSData *after = FDMBackupSortedItemsPayload(afterByID, error);
     if (!after) return nil;
     set.afterSnapshot = after;
     return set;
@@ -691,6 +703,12 @@ static BOOL FDMBackupHomeTagTypeIsReserved(NSNumber *type) {
     return set;
 }
 
+- (NSData *)recoverySnapshotWithError:(NSError **)error {
+    return FDMRecoverySQLSnapshot(self.database, self.tableName, self.columns, error);
+}
+- (BOOL)restoreRecoverySnapshot:(NSData *)snapshot error:(NSError **)error {
+    return FDMRecoverySQLRestore(self.database, snapshot, self.tableName, self.columns, error);
+}
 - (BOOL)rollbackStaged:(id)staged error:(NSError **)error {
     FDMBackupSQLStagedSet *set = staged;
     if (![set isKindOfClass:FDMBackupSQLStagedSet.class]) { if (error) *error = FDMRepoError(@"暂存集无效"); return NO; }

@@ -246,6 +246,7 @@ NSArray<NSString *> *FDMPolicyOverriddenFields(NSDictionary *entry) {
     NSMutableDictionary *_document;
     NSString *_path;
     BOOL _writable;
+    NSDictionary *_recoveryPublishedBefore;
 }
 
 + (instancetype)shared {
@@ -288,11 +289,22 @@ NSArray<NSString *> *FDMPolicyOverriddenFields(NSDictionary *entry) {
 
 - (NSDictionary *)snapshot {
     __block NSDictionary *value;
-    dispatch_sync(_queue, ^{
-        value = @{@"schemaVersion": @1, @"revision": self->_document[@"revision"] ?: @0,
-                  @"origins": [self->_document[@"origins"] copy] ?: @{}};
-    });
+    dispatch_sync(_queue, ^{ value = _recoveryPublishedBefore ?: @{@"schemaVersion": @1,
+        @"revision": _document[@"revision"] ?: @0, @"origins": [_document[@"origins"] copy] ?: @{}}; });
     return value;
+}
+- (NSDictionary *)transactionSnapshot {
+    __block NSDictionary *value;
+    dispatch_sync(_queue, ^{ value = @{@"schemaVersion": @1, @"revision": _document[@"revision"] ?: @0,
+        @"origins": [_document[@"origins"] copy] ?: @{}}; }); return value;
+}
+- (void)beginRecoveryPublication {
+    dispatch_sync(_queue, ^{ if (!_recoveryPublishedBefore) _recoveryPublishedBefore = @{@"schemaVersion": @1,
+        @"revision": _document[@"revision"] ?: @0, @"origins": [_document[@"origins"] copy] ?: @{}}; });
+}
+- (void)finishRecoveryPublication:(BOOL)publish {
+    if (!publish) return; // Failed rollback keeps the before snapshot protected until restart/recovery.
+    dispatch_sync(_queue, ^{ _recoveryPublishedBefore = nil; });
 }
 
 - (unsigned long long)revision {
@@ -304,7 +316,7 @@ NSArray<NSString *> *FDMPolicyOverriddenFields(NSDictionary *entry) {
 - (NSDictionary *)entryForOrigin:(NSString *)origin {
     if (!origin.length) return nil;
     __block NSDictionary *value;
-    dispatch_sync(_queue, ^{ value = self->_document[@"origins"][origin]; });
+    dispatch_sync(_queue, ^{ value = (self->_recoveryPublishedBefore ?: self->_document)[@"origins"][origin]; });
     return value;
 }
 
