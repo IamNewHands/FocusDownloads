@@ -18,7 +18,9 @@ void FDMRunNavigationRegression(NSString *origin);
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.window.rootViewController = [UIViewController new];
     [self.window makeKeyAndVisible];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+    // Use a run-loop timer, not one long main-dispatch block: nested fixture waits must be able
+    // to drain WebKit's main-queue completions without dispatch queue reentrancy suppression.
+    [NSTimer scheduledTimerWithTimeInterval:1 repeats:NO block:^(NSTimer *timer) {
         NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
         NSString *resultPath = [documents stringByAppendingPathComponent:@"regression-result.txt"];
         @try {
@@ -44,7 +46,7 @@ void FDMRunNavigationRegression(NSString *origin);
             [result writeToFile:resultPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
             NSLog(@"%@", result);
         }
-    });
+    }];
     return YES;
 }
 

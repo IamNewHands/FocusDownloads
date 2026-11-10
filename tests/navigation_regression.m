@@ -473,6 +473,9 @@ void FDMRunNavigationRegression(NSString *origin) {
     FDMNavCheck(FDMTOrigin.length > 0, @"TEST_ORIGIN was not supplied by the runner");
     FDMNavCheck(FDMNormalizedOrigin(FDMTOrigin).length > 0, @"TEST_ORIGIN is not a valid http origin");
 
+    __block BOOL mainCompletionRan = NO;
+    dispatch_async(dispatch_get_main_queue(), ^{ mainCompletionRan = YES; });
+    FDMNavCheck(FDMNavWait(3, ^BOOL { return mainCompletionRan; }), @"fixture blocks main-queue completions; WebKit has not been exercised");
     FDMInstallNavigationHooks();
     FDMNavCheck(FDMWebKitDownloads.shared.supported, @"WKDownload is unavailable on this simulator runtime");
 
