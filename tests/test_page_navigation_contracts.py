@@ -89,6 +89,21 @@ class PageNavigationContracts(unittest.TestCase):
         self.assertNotIn("FDMDrainNavigationCallbacks", fixture)
         self.assertIn("completion(exception);", fixture)
 
+    def test_manual_transition_fixture_does_not_enter_uikit_animation_engine(self):
+        fixture = (ROOT / "tests/page_navigation_regression.m").read_text(encoding="utf-8")
+        setter = fixture.split("- (void)setNavigationBarHidden:", 1)[1].split("- (void)pushViewController:", 1)[0]
+        self.assertLess(setter.index("self.fixtureTransition = nil"), setter.index("[super setNavigationBarHidden:hidden animated:NO]"))
+        self.assertIn("self.fixtureTransition = transition", setter)
+
+    def test_webkit_preferences_are_captured_per_webview_after_navigation_finishes(self):
+        fixture = (ROOT / "tests/navigation_regression.m").read_text(encoding="utf-8")
+        self.assertIn("objc_setAssociatedObject(webView, &FDMCapturedPreferencesKey", fixture)
+        self.assertIn("objc_getAssociatedObject(limited, &FDMCapturedPreferencesKey)", fixture)
+        self.assertIn("desktop preference navigation actually finished", fixture)
+        self.assertIn("mobile preference navigation actually finished", fixture)
+        self.assertNotIn("FDMCapturedContentMode", fixture)
+        self.assertNotIn("FDMNavFlush", fixture)
+
     def test_site_pages_share_navigation_without_backup_changes(self):
         sites = (ROOT / "src/FDMNativePages.m").read_text(encoding="utf-8").split("#pragma mark - backup", 1)[0]
         navigation = (ROOT / "src/FDMNavigation.m").read_text(encoding="utf-8")

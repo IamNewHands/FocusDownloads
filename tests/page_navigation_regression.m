@@ -105,6 +105,13 @@ void FDMTestInstallPageNavigationHooks(void);
 @end
 @implementation BaseNavigationController
 - (id<UIViewControllerTransitionCoordinator>)transitionCoordinator { return (id)self.fixtureTransition; }
+- (void)setNavigationBarHidden:(BOOL)hidden animated:(BOOL)animated {
+    // Transition callbacks are driven manually; UIKit must not animate with the fixture.
+    FDMNavigationContextFixture *transition = self.fixtureTransition;
+    self.fixtureTransition = nil;
+    [super setNavigationBarHidden:hidden animated:NO];
+    self.fixtureTransition = transition;
+}
 - (void)pushViewController:(UIViewController *)controller animated:(BOOL)animated {
     self.pushCount++;
     self.pushedAnimated = animated;

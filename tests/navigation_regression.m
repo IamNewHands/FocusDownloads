@@ -24,21 +24,12 @@
 static NSString *FDMTOrigin;
 static NSUInteger FDMScriptLoaderCalls;
 static NSUInteger FDMScriptLoaderCompletions;
-static WKWebpagePreferences *FDMCapturedPreferences;
-static NSInteger FDMCapturedContentMode = -1;
-static NSInteger FDMCapturedAllowsJS = -1;
+static char FDMCapturedPreferencesKey;
 static NSMutableArray *FDMNavigationErrors;
 static NSMutableArray *FDMNavigationActions;
 
 static void FDMNavCheck(BOOL condition, NSString *message) {
     if (!condition) [NSException raise:@"FDMNavigationRegression" format:@"%@", message];
-}
-
-static void FDMNavFlush(NSTimeInterval seconds) {
-    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:seconds];
-    while (deadline.timeIntervalSinceNow > 0) {
-        [NSRunLoop.mainRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.02]];
-    }
 }
 
 static BOOL FDMNavWait(NSTimeInterval timeout, BOOL (^condition)(void)) {
@@ -65,12 +56,13 @@ static NSString *FDMNavURL(NSString *path) {
     decisionHandler:(void (^)(WKNavigationActionPolicy, WKWebpagePreferences *))decisionHandler {
     [FDMNavigationActions addObject:[NSString stringWithFormat:@"%@ %@", action.request.HTTPMethod, action.request.URL]];
     if (action.targetFrame.isMainFrame || !action.targetFrame) {
-        FDMCapturedPreferences = preferences;
         // The hook mutates this same preferences object before forwarding the decision, so the
         // applied values are read after the handler returns, not before.
         decisionHandler(WKNavigationActionPolicyAllow, preferences);
-        FDMCapturedContentMode = preferences.preferredContentMode;
-        FDMCapturedAllowsJS = preferences.allowsContentJavaScript ? 1 : 0;
+        objc_setAssociatedObject(webView, &FDMCapturedPreferencesKey, @{
+            @"contentMode": @(preferences.preferredContentMode),
+            @"allowsJS": @(preferences.allowsContentJavaScript)
+        }, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return;
     }
     decisionHandler(WKNavigationActionPolicyAllow, preferences);
@@ -344,11 +336,13 @@ static void FDMTestSitePreferences(void) {
     FDMSetPolicy(origin, @{FDMPolicyContentMode: @"desktop", FDMPolicyPageJavaScript: @"on"});
     PandaWebView *webView = FDMNewWebView();
     [webView loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:FDMNavURL(@"/plain.html")]]];
-    FDMNavWait(40, ^BOOL { return webView.URL != nil; });
-    FDMNavFlush(1.0);
-    FDMNavCheck(FDMCapturedPreferences != nil, @"navigation preferences were never delivered to the host");
-    FDMNavCheck(FDMCapturedContentMode == WKContentModeDesktop,
-                [NSString stringWithFormat:@"desktop override not applied, saw %ld", (long)FDMCapturedContentMode]);
+    FDMNavCheck(FDMNavWait(40, ^BOOL {
+        return [objc_getAssociatedObject(webView, @selector(webView:didFinishNavigation:)) boolValue];
+    }), @"desktop preference navigation actually finished");
+    NSDictionary *desktop = objc_getAssociatedObject(webView, &FDMCapturedPreferencesKey);
+    FDMNavCheck(desktop != nil, @"navigation preferences were never delivered to the host");
+    FDMNavCheck([desktop[@"contentMode"] integerValue] == WKContentModeDesktop,
+                [NSString stringWithFormat:@"desktop override not applied, saw %@", desktop[@"contentMode"]]);
     __block NSString *title = nil;
     [webView evaluateJavaScript:@"document.title" completionHandler:^(id result, NSError *error) { title = result; }];
     FDMNavWait(20, ^BOOL { return title != nil; });
@@ -359,14 +353,15 @@ static void FDMTestSitePreferences(void) {
     FDMScriptLoaderCalls = 0;
     FDMScriptLoaderCompletions = 0;
     PandaWebView *limited = FDMNewWebView();
-    FDMCapturedPreferences = nil;
-    FDMCapturedContentMode = -1;
     [limited loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:FDMNavURL(@"/plain.html")]]];
-    FDMNavWait(40, ^BOOL { return limited.URL != nil; });
-    FDMNavFlush(1.5);
-    FDMNavCheck(FDMCapturedContentMode == WKContentModeMobile,
-                [NSString stringWithFormat:@"mobile override not applied, saw %ld", (long)FDMCapturedContentMode]);
-    FDMNavCheck(FDMCapturedAllowsJS == 0, @"page JavaScript must be disabled by the site override");
+    FDMNavCheck(FDMNavWait(40, ^BOOL {
+        return [objc_getAssociatedObject(limited, @selector(webView:didFinishNavigation:)) boolValue];
+    }), @"mobile preference navigation actually finished");
+    NSDictionary *mobile = objc_getAssociatedObject(limited, &FDMCapturedPreferencesKey);
+    FDMNavCheck(mobile != nil, @"mobile navigation preferences were never delivered to the host");
+    FDMNavCheck([mobile[@"contentMode"] integerValue] == WKContentModeMobile,
+                [NSString stringWithFormat:@"mobile override not applied, saw %@", mobile[@"contentMode"]]);
+    FDMNavCheck(![mobile[@"allowsJS"] boolValue], @"page JavaScript must be disabled by the site override");
     __block NSString *limitedTitle = nil;
     [limited evaluateJavaScript:@"document.title" completionHandler:^(id result, NSError *error) { limitedTitle = result; }];
     FDMNavWait(20, ^BOOL { return limitedTitle != nil; });
