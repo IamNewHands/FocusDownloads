@@ -19,14 +19,17 @@
 + (instancetype)shared { static id owner; static dispatch_once_t once; dispatch_once(&once, ^{ owner = [self new]; }); return owner; }
 - (instancetype)init { if ((self = [super init])) { _attempts = [NSMapTable strongToStrongObjectsMapTable]; _live = [NSMutableDictionary dictionary]; } return self; }
 - (BOOL)supported { if (@available(iOS 14.5, macOS 11.3, *)) return YES; return NO; }
-- (void)adoptDownload:(id)download intent:(id)intent tabID:(NSString *)tabID {
+- (BOOL)adoptDownload:(id)download intent:(id)intent tabID:(NSString *)tabID {
     NSAssert(NSThread.isMainThread, @"WebKit execution must run on main");
     if (@available(iOS 14.5, macOS 11.3, *)) {
-        if (![download isKindOfClass:WKDownload.class] || [_attempts objectForKey:download]) return;
+        if (![download isKindOfClass:WKDownload.class]) return NO;
+        if ([_attempts objectForKey:download]) return YES;
         NSString *key = [FDMEngine.shared registerWebKitDownload:download intent:intent tabID:tabID];
-        if (!key) { [(WKDownload *)download cancel:nil]; return; }
+        if (!key) { [(WKDownload *)download cancel:nil]; return NO; }
         [self bindDownload:download key:key identity:NSUUID.UUID.UUIDString];
+        return YES;
     }
+    return NO;
 }
 - (void)bindDownload:(id)object key:(NSString *)key identity:(NSString *)identity {
     if (@available(iOS 14.5, macOS 11.3, *)) {

@@ -15,6 +15,9 @@
 #import "FDMStore.h"
 #import "FDMNavigation.h"
 #import "FDMWebKitDownloads.h"
+#import "FDMPageImages.h"
+#import "FDMNativePages.h"
+#import "FDMBackup.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
 
@@ -466,6 +469,47 @@ static void FDMTestTemporaryOffAndMenu(void) {
     [FDMSitePolicyStore.shared resetOrigin:origin error:nil];
 }
 
+// Selected image GETs are new user actions through the original data store; they do not replay POST.
+static void FDMTestSelectedImages(void) {
+    PandaWebView *source = FDMNewWebView();
+    [source loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:FDMNavURL(@"/plain.html")]]];
+    FDMNavCheck(FDMNavWait(20, ^BOOL { return source.URL != nil; }), @"selected image source is loaded");
+    unsigned long long generation = FDMNavigationGeneration(source);
+    __block BOOL finished = NO; __block NSUInteger count = 0; __block NSError *failure = nil;
+    FDMStartSelectedPageImages(source, @[FDMNavURL(@"/image-one.png")], generation, ^(NSUInteger started, NSError *error) { count=started; failure=error; finished=YES; });
+    FDMNavCheck(FDMNavWait(30, ^BOOL { return finished; }) && count == 1 && !failure, @"one selected image is adopted exactly once");
+    FDMNavCheck(FDMNavWait(30, ^BOOL { return [FDMRowForWebView(source)[@"state"] integerValue] == FDMStateCompleted; }), @"selected image reaches a confirmed file");
+    NSArray *requests = FDMEntriesFor(FDMFetchServerLog(), @"/image-one.png", @"GET");
+    FDMNavCheck(requests.count==1 && [requests.firstObject[@"cookie"] containsString:@"fdm_nav=1"], @"image GET uses WebKit data-store cookie");
+    finished=NO; count=99;
+    FDMStartSelectedPageImages(source, @[FDMNavURL(@"/image-one.png")], generation+1, ^(NSUInteger started, NSError *error) { count=started; failure=error; finished=YES; });
+    FDMNavCheck(finished && count==0 && failure!=nil, @"stale page generation creates zero image requests");
+}
+
+@interface FDMBackupViewController (FDMFixtureSelectors)
+- (void)documentPicker:(UIDocumentPickerViewController *)picker didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls;
+- (void)cancelImport;
+@end
+static void FDMTestBackupCategoryUI(void) {
+    NSError *error=nil;
+    NSData *payload=[FDMBackupCoordinator.shared exportCategories:@[FDMBackupCategorySitePolicies, FDMBackupCategoryScripts] error:&error];
+    // Scripts need no host persistence to export an empty category in this fixture. Fall back only
+    // to a strict manually encoded container, never claim a repository round-trip here.
+    if (!payload) payload=FDMBackupEncode(@[
+        [FDMBackupCategory category:FDMBackupCategorySitePolicies payload:[@"{\"schemaVersion\":1,\"revision\":0,\"origins\":{}}" dataUsingEncoding:NSUTF8StringEncoding] itemCount:0],
+        [FDMBackupCategory category:FDMBackupCategoryScripts payload:[@"{\"schemaVersion\":1,\"scripts\":[]}" dataUsingEncoding:NSUTF8StringEncoding] itemCount:0]], @"fixture", &error);
+    NSString *path=[FDMDocumentsPath() stringByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingPathExtension:@"browserbackup"]];
+    FDMNavCheck(payload && [payload writeToFile:path atomically:YES], @"strict backup fixture file exists");
+    FDMBackupViewController *page=[[FDMBackupViewController alloc] initWithStyle:UITableViewStyleInsetGrouped]; [page loadViewIfNeeded];
+    [page documentPicker:nil didPickDocumentsAtURLs:@[[NSURL fileURLWithPath:path]]];
+    NSSet *selection=FDMValue(page,@"_selected");
+    FDMNavCheck(![selection containsObject:FDMBackupCategoryScripts], @"script import is opt-in, not preselected");
+    FDMNavCheck([page.navigationItem.rightBarButtonItem.title containsString:@"预览"], @"file selection opens category selection instead of immediate import");
+    FDMNavCheck(FDMValue(page,@"_pendingPlan")==nil, @"category selection does not build or execute an unseen import plan");
+    [page cancelImport];
+    FDMNavCheck([page.navigationItem.rightBarButtonItem.title isEqual:@"导出"] && FDMValue(page,@"_pendingContainer")==nil, @"cancel restores export UI and releases imported container");
+}
+
 #pragma mark - runner
 
 void FDMRunNavigationRegression(NSString *origin) {
@@ -481,7 +525,9 @@ void FDMRunNavigationRegression(NSString *origin) {
 
     FDMTestPostDownloadOnce();
     FDMTestSameURLDistinctTasks();
+    FDMTestSelectedImages();
     FDMTestSitePreferences();
     FDMTestMediaPermission();
     FDMTestTemporaryOffAndMenu();
+    FDMTestBackupCategoryUI();
 }

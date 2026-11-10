@@ -87,6 +87,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/__log":
             self._send(200, json.dumps(STATE.dump()).encode("utf-8"),
                        {"Content-Type": "application/json"})
+        elif path == "/image-one.png":
+            self._send(200, DOWNLOAD_BODY, {"Content-Type": "image/png"})
         elif path == "/post-download":
             # A GET here means something re-requested the download: that is the failure this
             # fixture exists to detect, so answer with the file to keep the signal unambiguous.

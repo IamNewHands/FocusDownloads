@@ -364,12 +364,18 @@ static void FDMMenuModel(id self, SEL selector) {
     if (FDMNavOriginalMenu) ((void (*)(id, SEL))FDMNavOriginalMenu)(self, selector);
     NSMutableArray *model = FDMValue(self, @"model");
     if (![model isKindOfClass:NSMutableArray.class]) return;
-    for (id item in model) if ([FDMValue(item, @"itemType") integerValue] == 0x46444d) return;
     Class cls = NSClassFromString(@"PreferenceItemModel"); if (!cls) return;
-    id item = [[cls alloc] init];
-    [item setValue:@"网站设置" forKey:@"title"]; [item setValue:@"tool_ua_icon" forKey:@"imageName"];
-    [item setValue:@(0x46444d) forKey:@"itemType"]; [item setValue:@NO forKey:@"shouldAffectByHomeURL"];
-    [model addObject:item];
+    NSArray *additions = @[@{@"title": @"网站设置", @"type": @(0x46444d), @"icon": @"tool_ua_icon"},
+        @{@"title": @"下载本页图片", @"type": @(0x464449), @"icon": @"tool_down_icon"}];
+    for (NSDictionary *addition in additions) {
+        BOOL exists = NO;
+        for (id old in model) if ([FDMValue(old, @"itemType") integerValue] == [addition[@"type"] integerValue]) { exists = YES; break; }
+        if (exists) continue;
+        id item = [[cls alloc] init];
+        [item setValue:addition[@"title"] forKey:@"title"]; [item setValue:addition[@"icon"] forKey:@"imageName"];
+        [item setValue:addition[@"type"] forKey:@"itemType"]; [item setValue:@NO forKey:@"shouldAffectByHomeURL"];
+        [model addObject:item];
+    }
     UICollectionView *collection = FDMValue(self, @"collectionView"); [collection reloadData];
 }
 void FDMInstallNavigationCreatedCallback(void (^callback)(void)) { FDMNavDownloadNotice = [callback copy]; }

@@ -11,6 +11,7 @@
 #import "FDMBackup.h"
 #import "FDMNativePages.h"
 #import "FDMNavigation.h"
+#import "FDMPageImages.h"
 
 static NSString *const FDMDownloadsLink = @"focusdm://downloads";
 static NSString *const FDMSitePoliciesLink = @"focusdm://site-policies";
@@ -162,6 +163,11 @@ static NSInteger FDMPreferenceType(id model) {
 }
 
 static void FDMPreferenceSelect(id self, SEL selector, id model) {
+    if (FDMPreferenceType(model) == 0x464449) {
+        SEL hide = NSSelectorFromString(@"hideUserPreferenceView");
+        if ([self respondsToSelector:hide]) ((void (*)(id, SEL))objc_msgSend)(self, hide);
+        FDMOpenPageImages(self); return;
+    }
     if (FDMPreferenceType(model) == 0x46444d) {
         SEL hide = NSSelectorFromString(@"hideUserPreferenceView");
         if ([self respondsToSelector:hide]) ((void (*)(id, SEL))objc_msgSend)(self, hide);
