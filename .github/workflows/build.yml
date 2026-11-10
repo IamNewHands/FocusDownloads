@@ -41,7 +41,7 @@ jobs:
           xcrun --sdk macosx clang -fobjc-arc -fblocks -Wall -Wextra \
             -DFDM_TESTING=1 -DFDM_BACKUP_REGRESSION_MAIN=1 -Isrc \
             -framework Foundation -lsqlite3 \
-            src/FDMCommon.m src/FDMJSON.m src/FDMPolicy.m src/FDMBackup.m src/FDMBackupSQL.m src/FDMBackupRecovery.m \
+            src/FDMCommon.m src/FDMJSON.m src/FDMPolicy.m src/FDMBackup.m src/FDMBackupSQL.m src/FDMBackupRecovery.m src/FDMBackupReadBarrier.m \
             src/FDMBackupRepositoryBookmarks.m src/FDMBackupRepositorySearch.m \
             src/FDMBackupRepositoryPreferences.m src/FDMBackupRepositoryScripts.m \
             src/FDMBackupRepositoryPolicy.m src/FDMBackupCoordinator.m \

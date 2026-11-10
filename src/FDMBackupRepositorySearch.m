@@ -2,6 +2,7 @@
 #import "FDMBackupSQL.h"
 #import "FDMJSON.h"
 #import "FDMBackupRecovery.h"
+#import "FDMBackupReadBarrier.h"
 
 // Fixed facts of this host build, confirmed from the binary:
 //   SearchListManager init: [[NSUserDefaults alloc] initWithSuiteName:@"com.focus.searchlist"]
@@ -74,26 +75,6 @@ static NSDictionary *FDMBackupSearchHostRow(NSDictionary *portable) {
     return row;
 }
 
-// Full structural comparison, not a count: two different engine sets can share a count.
-static BOOL FDMBackupSearchRowsEquivalent(NSArray *left, NSArray *right) {
-    if (left.count != right.count) return NO;
-    NSMutableDictionary *byURL = [NSMutableDictionary dictionary];
-    for (NSDictionary *row in left) {
-        NSString *url = FDMJSONStringValue(row[@"searchUrl"]);
-        if (url.length) byURL[url] = row;
-    }
-    for (NSDictionary *row in right) {
-        NSString *url = FDMJSONStringValue(row[@"searchUrl"]);
-        if (!url.length) return NO;
-        NSDictionary *other = byURL[url];
-        if (!other) return NO;
-        if (![FDMJSONStringValue(other[@"title"]) isEqual:FDMJSONStringValue(row[@"title"])]) return NO;
-        NSString *a = FDMJSONStringValue(other[@"suggestUrl"]) ?: @"";
-        NSString *b = FDMJSONStringValue(row[@"suggestUrl"]) ?: @"";
-        if (![a isEqual:b]) return NO;
-    }
-    return YES;
-}
 - (NSArray<NSDictionary *> *)rawEngines {
     id value = [_defaults arrayForKey:FDMBackupSearchKey];
     return [value isKindOfClass:NSArray.class] ? value : @[];
@@ -208,22 +189,20 @@ static BOOL FDMBackupSearchRowsEquivalent(NSArray *left, NSArray *right) {
 }
 
 - (NSDictionary<NSString *, NSNumber *> *)previewCountsForValidated:(id)validated error:(NSError **)error {
-    NSMutableDictionary *liveByURL = [NSMutableDictionary dictionary];
-    for (id raw in [self rawEngines]) {
-        NSDictionary *row = FDMJSONObjectValue(raw);
-        NSString *url = FDMJSONStringValue(row[@"searchUrl"]);
-        if (url.length) liveByURL[url] = row;
+    NSMutableDictionary *liveByID = [NSMutableDictionary dictionary];
+    for (NSDictionary *row in [self rawEngines]) if ([row[@"uuid"] isKindOfClass:NSString.class]) liveByID[row[@"uuid"]] = row;
+    NSUInteger added = 0, same = 0, conflict = 0;
+    for (NSDictionary *incoming in validated) {
+        NSDictionary *local = liveByID[incoming[@"id"]];
+        if (!local) { added++; continue; }
+        NSDictionary *converted = FDMBackupSearchHostRow(incoming);
+        BOOL equal = YES;
+        for (NSString *key in @[@"title", @"searchUrl", @"suggestUrl", @"type", @"position"])
+            if ((local[key] || converted[key]) && ![local[key] isEqual:converted[key]]) { equal = NO; break; }
+        if (equal) same++; else conflict++;
     }
-    NSUInteger added = 0, identical = 0, conflict = 0;
-    for (NSDictionary *engine in validated) {
-        NSDictionary *existing = liveByURL[engine[@"searchUrl"]];
-        if (!existing) { added++; continue; }
-        BOOL same = [FDMJSONStringValue(existing[@"title"]) isEqual:engine[@"title"]];
-        if (same) identical++; else conflict++;
-    }
-    return @{FDMBackupCountAdded: @(added), FDMBackupCountIdentical: @(identical),
-             FDMBackupCountConflict: @(conflict), FDMBackupCountDowngraded: @0,
-             FDMBackupCountDisabled: @0, FDMBackupCountUnsupported: @0};
+    return @{FDMBackupCountAdded: @(added), FDMBackupCountIdentical: @(same), FDMBackupCountConflict: @(conflict),
+        FDMBackupCountDisabled: @0, FDMBackupCountDowngraded: @0, FDMBackupCountUnsupported: @0};
 }
 
 - (id)stageMergeValidated:(id)validated replace:(BOOL)replace error:(NSError **)error {
@@ -250,8 +229,9 @@ static BOOL FDMBackupSearchRowsEquivalent(NSArray *left, NSArray *right) {
         BOOL found = NO;
         for (NSUInteger i=0;i<after.count;i++) {
             NSMutableDictionary *row = [after[i] mutableCopy];
-            BOOL same = [row[@"uuid"] isEqual:selected[@"uuid"]]; row[@"isSelected"] = @(same);
-            if (same) found = YES; after[i] = row;
+            BOOL same = [row[@"uuid"] isEqual:selected[@"uuid"]];
+            if (same) { row[@"isSelected"] = @YES; found = YES; }
+            after[i] = row;
         }
         // Replacement does not silently switch the user's default engine.
         if (!found) [after addObject:selected];
@@ -263,7 +243,8 @@ static BOOL FDMBackupSearchRowsEquivalent(NSArray *left, NSArray *right) {
     NSMutableArray *portable = [NSMutableArray array];
     for (NSDictionary *row in after) {
         NSMutableDictionary *item = [@{@"id": row[@"uuid"] ?: @"", @"title": row[@"title"] ?: @"",
-            @"searchUrl": row[@"searchUrl"] ?: @"", @"selected": @([row[@"isSelected"] boolValue])} mutableCopy];
+            @"searchUrl": row[@"searchUrl"] ?: @""} mutableCopy];
+        if (row[@"isSelected"]) item[@"selected"] = @([row[@"isSelected"] boolValue]);
         for (NSString *key in @[@"suggestUrl", @"type", @"position"]) if (row[key]) item[key] = row[key];
         [portable addObject:item];
     }
@@ -292,6 +273,7 @@ static BOOL FDMBackupSearchRowsEquivalent(NSArray *left, NSArray *right) {
     [_defaults synchronize];
     return set.beforeBlob ? [[_defaults arrayForKey:FDMBackupSearchKey] isEqual:set.beforeBlob] : [_defaults objectForKey:FDMBackupSearchKey] == nil;
 }
+- (void)preparePublicationBarrier { FDMBackupProtectDefaults(_defaults, @"com.focus.searchlist", @"saved_search_list_data"); }
 - (NSData *)recoverySnapshotWithError:(NSError **)error {
     id raw = [_defaults objectForKey:FDMBackupSearchKey];
     if (raw && ![raw isKindOfClass:NSArray.class]) { if (error) *error = FDMRepoError(@"原搜索配置格式未知"); return nil; }

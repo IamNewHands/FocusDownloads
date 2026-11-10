@@ -350,6 +350,7 @@ NSArray<NSString *> *FDMPolicyOverriddenFields(NSDictionary *entry) {
     __block BOOL ok = NO;
     __block NSError *failure;
     dispatch_sync(_queue, ^{
+        if (_recoveryPublishedBefore) { failure = FDMPolicyError(@"站点配置正在恢复；本次修改未写入，请恢复完成后重试"); return; }
         NSMutableDictionary *origins = [self->_document[@"origins"] mutableCopy] ?: [NSMutableDictionary dictionary];
         if (validatedEntry) origins[normalized] = validatedEntry;
         else [origins removeObjectForKey:normalized];
@@ -371,6 +372,7 @@ NSArray<NSString *> *FDMPolicyOverriddenFields(NSDictionary *entry) {
     __block BOOL ok = NO;
     __block NSError *failure;
     dispatch_sync(_queue, ^{
+        if (_recoveryPublishedBefore) { failure = FDMPolicyError(@"站点配置正在恢复；本次修改未写入，请恢复完成后重试"); return; }
         if ([self->_document[@"revision"] unsignedLongLongValue] != expected) {
             failure = FDMPolicyError(@"站点规则已被修改，请重新预览后再导入");
             return;

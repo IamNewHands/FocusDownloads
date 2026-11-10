@@ -130,7 +130,7 @@ static NSArray<NSDictionary *> *FDMValidateBookmarkItems(NSArray *items,
         while (cursor.length) {
             if ([seen containsObject:cursor]) { if (error) *error = FDMRepoError(@"文件夹存在循环引用"); return nil; }
             [seen addObject:cursor];
-            if (++depth > 64) { if (error) *error = FDMRepoError(@"层级过深"); return nil; }
+            if (++depth > 32) { if (error) *error = FDMRepoError(@"层级过深"); return nil; }
             cursor = parentOf[cursor];
         }
     }
@@ -146,7 +146,7 @@ static BOOL FDMValidateMergedTree(NSDictionary<NSString *, NSString *> *parentOf
         while (cursor.length) {
             if ([seen containsObject:cursor]) { if (error) *error = FDMRepoError(@"合并后存在循环引用"); return NO; }
             [seen addObject:cursor];
-            if (++depth > 64) { if (error) *error = FDMRepoError(@"合并后层级过深"); return NO; }
+            if (++depth > 32) { if (error) *error = FDMRepoError(@"合并后层级过深"); return NO; }
             cursor = parentOf[cursor];
         }
     }
@@ -220,10 +220,10 @@ static BOOL FDMValidateMergedTree(NSDictionary<NSString *, NSString *> *parentOf
         if (![item[@"id"] length]) continue;
         item[@"title"] = FDMRepoStringOrEmpty(row[@"title"]);
         item[@"url"] = FDMRepoStringOrEmpty(row[@"url"]);
-        if (row[@"parentId"] && row[@"parentId"] != NSNull.null) item[@"parentID"] = FDMRepoStringOrEmpty(row[@"parentId"]);
-        if (row[@"iconUrl"] && row[@"iconUrl"] != NSNull.null) item[@"iconURL"] = FDMRepoStringOrEmpty(row[@"iconUrl"]);
-        if ([row[@"fileType"] isKindOfClass:NSNumber.class]) item[@"fileType"] = row[@"fileType"];
-        if ([row[@"ppOrder"] isKindOfClass:NSNumber.class]) item[@"order"] = row[@"ppOrder"];
+        NSString *parent = FDMRepoStringOrEmpty(row[@"parentId"]); if (parent.length) item[@"parentID"] = parent;
+        item[@"iconURL"] = FDMRepoStringOrEmpty(row[@"iconUrl"]);
+        item[@"fileType"] = [row[@"fileType"] isKindOfClass:NSNumber.class] ? row[@"fileType"] : @0;
+        item[@"order"] = [row[@"ppOrder"] isKindOfClass:NSNumber.class] ? row[@"ppOrder"] : @0;
         [items addObject:item];
     }
     NSData *payload = FDMJSONCanonicalData(@{@"schemaVersion": @1, @"items": items}, error);
@@ -310,7 +310,7 @@ static BOOL FDMValidateMergedTree(NSDictionary<NSString *, NSString *> *parentOf
     if (replace) {
         NSMutableSet *imported = [NSMutableSet set];
         for (NSDictionary *item in validated) [imported addObject:item[@"id"]];
-        for (NSString *identifier in liveByID) if (![imported containsObject:identifier]) [toDelete addObject:identifier];
+        for (NSString *identifier in liveByID) if (![imported containsObject:identifier]) { [toDelete addObject:identifier]; [mergedParents removeObjectForKey:identifier]; }
     }
 
     // A parent must exist after the merge; a dangling parent would orphan the subtree.

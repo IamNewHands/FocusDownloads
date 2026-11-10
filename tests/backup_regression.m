@@ -13,6 +13,8 @@
 #import "FDMBackupRepository.h"
 #import "FDMBackupRepositoryImpl.h"
 #import "FDMBackupSQL.h"
+#import "FDMBackupRecovery.h"
+#import "FDMBackupReadBarrier.h"
 
 static void FDMBackupCheck(BOOL condition, NSString *message) {
     if (!condition) [NSException raise:@"FDMBackupRegression" format:@"%@", message];
@@ -533,6 +535,101 @@ static void FDMTestJournalHashMismatchBlocks(void) {
     printf("B07 journal hash mismatch blocks passed\n");
 }
 
+// Host substitutes here only model the original cache/model seam. Actual SQL/defaults/files and
+// the shipped recovery coordinator are exercised; this is not a Focus-device acceptance claim.
+@interface UserScript : NSObject
+@property (nonatomic, copy) NSDictionary *values;
+@property (nonatomic, copy) NSString *executorJs;
+- (instancetype)initWithDictionary:(NSDictionary *)dictionary error:(NSError **)error;
+- (void)jsonModelFromSql;
+- (void)updateExecutorJs;
+@end
+@implementation UserScript
+- (instancetype)initWithDictionary:(NSDictionary *)dictionary error:(NSError **)error { if ((self=[super init])) _values=[dictionary copy]; return self; }
+- (void)jsonModelFromSql {}
+- (void)updateExecutorJs { self.executorJs = [@"fixture-wrapper:" stringByAppendingString:_values[@"content"] ?: @""]; }
+@end
+@interface Tampermonkey : NSObject
+@property (nonatomic, copy) NSString *scriptPath;
+@property (nonatomic, strong) NSMutableArray *cache;
++ (instancetype)shareInstance;
+@end
+@implementation Tampermonkey
++ (instancetype)shareInstance { static id owner; static dispatch_once_t once; dispatch_once(&once, ^{ owner=[self new]; [owner setCache:[NSMutableArray array]]; }); return owner; }
+- (void)removeAllUserScriptsFromCache { [_cache removeAllObjects]; }
+- (void)saveUserScriptToCache:(id)model { [_cache addObject:model]; }
+@end
+
+static void FDMTestFullMetadataAndAliases(void) {
+    NSString *path=[FDMDocumentsPath() stringByAppendingPathComponent:@"metadata.sqlite"];
+    NSError *error=nil; FDMSQLiteFixtureDatabase *database=[[FDMSQLiteFixtureDatabase alloc] initWithPath:path error:&error]; FDMBackupCreateSchema(database);
+    FDMBackupScriptsRepository *repository=[[FDMBackupScriptsRepository alloc] initWithDatabase:database];
+    NSDictionary *original=@{@"id": @"script-1", @"name": @"Sample", @"content": @"// original body", @"runAt": @"document-end", @"enabled": @YES};
+    NSData *payload=FDMJSONCanonicalData(@{@"schemaVersion": @1, @"scripts": @[original]}, &error);
+    id dto=[repository validateImportPayload:payload error:&error]; id first=[repository stageMergeValidated:dto replace:YES error:&error];
+    FDMBackupCheck(first && [repository commitStaged:first error:&error], @"first script stored");
+    [database inDatabase:^(id<FDMBackupSQLExecutor> sql) { [sql update:@"UPDATE t_userscript SET isActive=1 WHERE uuid=?" parameters:@[@"script-1"] error:NULL]; }];
+    NSMutableDictionary *changed=[original mutableCopy]; changed[@"runAt"]=@"document-start";
+    payload=FDMJSONCanonicalData(@{@"schemaVersion": @1, @"scripts": @[changed]}, &error); dto=[repository validateImportPayload:payload error:&error];
+    NSDictionary *counts=[repository previewCountsForValidated:dto error:&error];
+    FDMBackupCheck([counts[FDMBackupCountConflict] integerValue]==1 && [counts[FDMBackupCountIdentical] integerValue]==0, @"metadata-only change is a conflict");
+    id replacement=[repository stageMergeValidated:dto replace:YES error:&error];
+    FDMBackupCheck(replacement && [repository commitStaged:replacement error:&error], @"metadata-only replacement applies");
+    FDMBackupCheck([FDMBackupRowValue(database, @"t_userscript", @"uuid", @"script-1", @"isActive") isEqual:@"0"], @"metadata-only changed script is disabled");
+    FDMBackupCheck([FDMBackupRowValue(database, @"t_userscript", @"uuid", @"script-1", @"runAt") isEqual:@"document-start"], @"new metadata really stored");
+    NSData *aliases=FDMJSONCanonicalData(@{@"schemaVersion": @1, @"scripts": @[
+        @{@"id": @"a-b", @"name": @"A", @"content": @"one"}, @{@"id": @"a_b", @"name": @"B", @"content": @"two"}]}, &error);
+    FDMBackupCheck([repository validateImportPayload:aliases error:&error]==nil, @"distinct IDs mapping to same file are refused");
+    [database close]; printf("full metadata and source-path aliases passed\n");
+}
+static void FDMTestReadBarrierAndConcurrentWrite(void) {
+    NSString *suite=[@"focusdm.barrier." stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSUserDefaults *owner=[[NSUserDefaults alloc] initWithSuiteName:suite], *reader=[[NSUserDefaults alloc] initWithSuiteName:suite];
+    [owner setObject:@[@"before"] forKey:@"config"]; [owner synchronize];
+    FDMBackupBeginReadBarrier(); FDMBackupProtectDefaults(owner, suite, @"config");
+    FDMBackupInternalAccess(^BOOL { [owner setObject:@[@"after"] forKey:@"config"]; [owner synchronize]; return YES; });
+    FDMBackupCheck([[reader arrayForKey:@"config"] isEqual:@[@"before"]], @"another suite instance keeps the published before snapshot");
+    __block NSArray *backgroundRead=nil;
+    dispatch_sync(dispatch_get_global_queue(QOS_CLASS_DEFAULT,0), ^{ backgroundRead=[reader arrayForKey:@"config"]; });
+    FDMBackupCheck([backgroundRead isEqual:@[@"before"]], @"background reader cannot observe half-committed defaults");
+    [reader setObject:@[@"user-edit"] forKey:@"config"];
+    __block BOOL marker=NO;
+    FDMBackupCheck(!FDMBackupReadBarrierCommit(^BOOL { marker=YES; return YES; }) && !marker, @"concurrent user write prevents marker commit");
+    FDMBackupInternalAccess(^BOOL { [owner setObject:@[@"before"] forKey:@"config"]; return YES; });
+    FDMBackupFinishReadBarrier(YES);
+    FDMBackupCheck([[reader arrayForKey:@"config"] isEqual:@[@"user-edit"]], @"deferred user edit survives rollback");
+    [owner removePersistentDomainForName:suite]; printf("transaction read snapshots and concurrent writes passed\n");
+}
+static void FDMTestScriptFilesAndExactRestart(void) {
+    NSString *path=[FDMDocumentsPath() stringByAppendingPathComponent:@"source.sqlite"];
+    NSError *error=nil; FDMSQLiteFixtureDatabase *database=[[FDMSQLiteFixtureDatabase alloc] initWithPath:path error:&error]; FDMBackupCreateSchema(database);
+    FDMBackupScriptsRepository *repository=[[FDMBackupScriptsRepository alloc] initWithDatabase:database];
+    Tampermonkey.shareInstance.scriptPath=FDMDirectory(@"scripts");
+    NSDictionary *old=@{@"id": @"file-1", @"name": @"Old", @"content": @"// body-before", @"runAt": @"document-end", @"enabled": @NO};
+    NSData *payload=FDMJSONCanonicalData(@{@"schemaVersion": @1, @"scripts": @[old]}, &error);
+    id dto=[repository validateImportPayload:payload error:&error], stage=[repository stageMergeValidated:dto replace:YES error:&error];
+    FDMBackupCheck(stage && [repository commitStaged:stage error:&error] && [repository verifyCommittedStateWithError:&error], @"source and SQL are materialized");
+    NSString *file=[Tampermonkey.shareInstance.scriptPath stringByAppendingPathComponent:@"file_1.js"];
+    FDMBackupCheck([[NSData dataWithContentsOfFile:file] isEqual:[@"// body-before" dataUsingEncoding:NSUTF8StringEncoding]], @"disk source equals original bytes");
+    NSData *before=[repository recoverySnapshotWithError:&error]; FDMBackupCheck(before != nil,@"full SQL and source before-image exists");
+    FDMBackupBeginReadBarrier(); [repository preparePublicationBarrier];
+    FDMBackupInternalAccess(^BOOL {
+        [@"// body-after" writeToFile:file atomically:YES encoding:NSUTF8StringEncoding error:NULL]; return YES;
+    });
+    FDMBackupCheck([[[NSFileManager defaultManager] contentsAtPath:file] isEqual:[@"// body-before" dataUsingEncoding:NSUTF8StringEncoding]], @"host source reader sees published before file");
+    NSString *journalPath=[FDMDirectory(@"FocusDM") stringByAppendingPathComponent:@"backup-journal.json"];
+    NSDictionary *journal=@{@"schemaVersion": @2, @"transactionID": NSUUID.UUID.UUIDString, @"stage": @"rollbackPending",
+        @"categories": @[FDMBackupCategoryScripts], @"exact": @{FDMBackupCategoryScripts: @YES},
+        @"before": @{FDMBackupCategoryScripts: @{@"bytes": [before base64EncodedStringWithOptions:0], @"sha256": FDMBackupSHA256(before)}}};
+    FDMBackupCheck(FDMWriteDurableJSON(journal,journalPath,&error), @"rollbackPending state persisted before recovery");
+    FDMBackupCoordinator *newCoordinator=[FDMBackupCoordinator new]; [newCoordinator registerRepository:repository database:database];
+    [newCoordinator recoverInterruptedTransaction];
+    FDMBackupCheck(!newCoordinator.recoveryBlocked, @"new recovery owner restores rollbackPending, never treats it as committed");
+    FDMBackupCheck([[NSData dataWithContentsOfFile:file] isEqual:[@"// body-before" dataUsingEncoding:NSUTF8StringEncoding]], @"exact before source restored on restart");
+    FDMBackupCheck([[repository recoverySnapshotWithError:&error] isEqual:before], @"all SQL metadata and source bytes are exact after recovery");
+    [database close]; printf("real script source and exact restart recovery passed\n");
+}
+
 static void FDMBackupBeginCase(NSString *label) {
     NSString *root = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"focusdm-backup-%@-%@", label, NSUUID.UUID.UUIDString]];
     FDMBackupCheck([[NSFileManager defaultManager] createDirectoryAtPath:root withIntermediateDirectories:YES attributes:nil error:NULL], @"fresh case directory exists");
@@ -548,6 +645,10 @@ void FDMRunBackupRegression(void) {
     FDMBackupBeginCase(@"JournalHashMismatchBlocks"); FDMTestJournalHashMismatchBlocks();
     FDMBackupBeginCase(@"ConcurrentChangeForcesRepreview"); FDMTestConcurrentChangeForcesRepreview();
     FDMBackupBeginCase(@"RollbackFailureKeepsProtection"); FDMTestRollbackFailureKeepsProtection();
+    FDMBackupFinishReadBarrier(YES);
+    FDMBackupBeginCase(@"FullMetadataAndAliases"); FDMTestFullMetadataAndAliases();
+    FDMBackupBeginCase(@"ReadBarrierAndConcurrentWrite"); FDMTestReadBarrierAndConcurrentWrite();
+    FDMBackupBeginCase(@"ScriptFilesAndExactRestart"); FDMTestScriptFilesAndExactRestart();
     FDMBackupBeginCase(@"NoSecretsInContainer"); FDMTestNoSecretsInContainer();
     FDMBackupBeginCase(@"ScriptImportRules"); FDMTestScriptImportRules();
     FDMBackupBeginCase(@"PolicyDowngrade"); FDMTestPolicyDowngrade();

@@ -328,7 +328,8 @@ static NSArray<NSString *> *FDMPolicyOptionsForField(NSString *field) {
 @implementation FDMBackupViewController {
     NSArray<NSString *> *_categories;
     NSMutableSet<NSString *> *_selected;
-    NSURL *_pendingURL;
+    NSSet<NSString *> *_exportSelection;
+    BOOL _importMode;
     FDMBackupContainer *_pendingContainer;
     FDMBackupImportPlan *_pendingPlan;
 }
@@ -341,6 +342,8 @@ static NSArray<NSString *> *FDMPolicyOptionsForField(NSString *field) {
     for (NSString *category in _categories) if (FDMBackupCategorySelectedByDefault(category)) [_selected addObject:category];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"导出" style:UIBarButtonItemStyleDone target:self action:@selector(exportBackup)];
     self.tableView.allowsMultipleSelection = NO;
+    self.tableView.rowHeight = UITableViewAutomaticDimension;
+    self.tableView.estimatedRowHeight = 64;
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 2; }
@@ -350,40 +353,81 @@ static NSArray<NSString *> *FDMPolicyOptionsForField(NSString *field) {
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return section == 0 ? @"选择要备份的类别" : nil;
+    return section == 0 ? (_importMode ? @"选择要恢复的类别（文件内容）" : @"选择要备份的类别") : nil;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == 0) return @"始终不包含：Cookie、密码、钥匙串、Authorization、下载请求/续传数据、浏览历史、缓存与无痕数据。用户脚本可能包含密钥，默认不选。备份文件不加密，请妥善保存。";
-    return @"导入前会完整校验并显示差异预览；默认合并并保留本地冲突项。";
+    if (section == 0) {
+        if (_importMode) return @"只恢复勾选的类别；不支持的类别不可选。用户脚本可能包含密钥，默认不选；新增或改变的脚本导入后禁用。点“下一步：预览”查看差异，不会立即写入。";
+        return @"始终不包含：Cookie、密码、钥匙串、Authorization、下载请求/续传数据、浏览历史、缓存与无痕数据。用户脚本可能包含密钥，默认不选。备份文件不加密，请妥善保存。";
+    }
+    return _importMode ? @"取消会返回导出页面，不修改本地数据或原备份文件。" : @"导入前会完整校验并显示差异预览；默认合并并保留本地冲突项。";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"backup"];
     if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"backup"];
+    cell.textLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    cell.detailTextLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    cell.textLabel.adjustsFontForContentSizeCategory = YES;
+    cell.detailTextLabel.adjustsFontForContentSizeCategory = YES;
+    cell.textLabel.numberOfLines = 0;
     cell.detailTextLabel.numberOfLines = 0;
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    cell.accessibilityTraits = UIAccessibilityTraitButton;
+    cell.accessibilityValue = nil;
     if (indexPath.section == 1) {
-        cell.textLabel.text = @"从文件导入…";
-        cell.detailTextLabel.text = @"选择 .browserbackup 文件";
+        cell.textLabel.text = _importMode ? @"取消导入" : @"从文件导入…";
+        cell.detailTextLabel.text = _importMode ? @"返回导出页面，不改动任何数据" : @"选择 .browserbackup 文件";
         cell.textLabel.textColor = UIColor.systemBlueColor;
         cell.accessoryType = UITableViewCellAccessoryNone;
         return cell;
     }
     NSString *category = _categories[indexPath.row];
+    BOOL available = !_importMode || ([_pendingContainer.categories objectForKey:category] && [FDMBackupCoordinator.shared.availableCategories containsObject:category]);
+    BOOL selected = available && [_selected containsObject:category];
     cell.textLabel.text = FDMBackupCategoryTitle(category);
-    cell.textLabel.textColor = UIColor.labelColor;
-    cell.detailTextLabel.text = [category isEqual:FDMBackupCategoryScripts] ? @"可能包含密钥；导入后默认禁用" : nil;
-    cell.accessoryType = [_selected containsObject:category] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+    cell.textLabel.textColor = available ? UIColor.labelColor : UIColor.secondaryLabelColor;
+    NSString *scriptNotice = [category isEqual:FDMBackupCategoryScripts] ? @"可能包含密钥；默认不选，新增或改变的脚本导入后禁用" : nil;
+    if (_importMode) {
+        FDMBackupCategory *entry = _pendingContainer.categories[category];
+        NSString *contents = entry ? [NSString stringWithFormat:@"文件包含 %lu 项", (unsigned long)entry.itemCount] : @"文件包含此类别";
+        cell.detailTextLabel.text = !available ? [contents stringByAppendingString:@"；本版本或当前环境不支持，不会恢复"] : (scriptNotice ? [contents stringByAppendingFormat:@"；%@", scriptNotice] : contents);
+    } else cell.detailTextLabel.text = scriptNotice;
+    cell.accessoryType = selected ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+    cell.accessibilityValue = available ? (selected ? @"已选择" : @"未选择") : @"不支持，不会恢复";
+    cell.accessibilityTraits = available ? (UIAccessibilityTraitButton | (selected ? UIAccessibilityTraitSelected : 0)) : UIAccessibilityTraitNotEnabled;
+    if (!available) cell.selectionStyle = UITableViewCellSelectionStyleNone;
     return cell;
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    if (indexPath.section == 1) { [self pickBackupFile]; return; }
+    if (indexPath.section == 1) {
+        if (_importMode) [self cancelImport]; else [self pickBackupFile];
+        return;
+    }
     NSString *category = _categories[indexPath.row];
+    if (_importMode && (!_pendingContainer.categories[category] || ![FDMBackupCoordinator.shared.availableCategories containsObject:category])) return;
     if ([_selected containsObject:category]) [_selected removeObject:category];
     else [_selected addObject:category];
+    _pendingPlan = nil;
     [tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
+}
+
+- (void)cancelImport {
+    NSSet *selection = _exportSelection ?: [_selected copy];
+    _importMode = NO;
+    _pendingContainer = nil;
+    _pendingPlan = nil;
+    _exportSelection = nil;
+    _categories = FDMBackupCoordinator.shared.availableCategories;
+    _selected = [NSMutableSet set];
+    for (NSString *category in _categories) if ([selection containsObject:category]) [_selected addObject:category];
+    self.title = @"数据备份";
+    self.navigationItem.leftBarButtonItem = nil;
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"导出" style:UIBarButtonItemStyleDone target:self action:@selector(exportBackup)];
+    [self.tableView reloadData];
 }
 
 - (void)exportBackup {
@@ -442,66 +486,105 @@ static NSArray<NSString *> *FDMPolicyOptionsForField(NSString *field) {
     [self presentViewController:picker animated:YES completion:nil];
 }
 
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
+    [self cancelImport];
+}
+
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     NSURL *url = urls.firstObject;
-    if (!url) return;
+    if (!url) { [self cancelImport]; return; }
     BOOL scoped = [url startAccessingSecurityScopedResource];
     NSError *error = nil;
     FDMBackupContainer *container = [FDMBackupCoordinator.shared openBackupAtURL:url error:&error];
     if (scoped) [url stopAccessingSecurityScopedResource];
-    if (!container) { [self showMessage:error.localizedDescription ?: @"无法读取备份文件"]; return; }
-    NSMutableArray *usable = [NSMutableArray array];
-    for (NSString *category in FDMBackupCategoryOrder()) if (container.categories[category]) [usable addObject:category];
-    FDMBackupImportPlan *plan = [FDMBackupCoordinator.shared previewContainer:container categories:usable replace:NO error:&error];
-    if (!plan) { [self showMessage:error.localizedDescription ?: @"无法预览备份内容"]; return; }
+    if (!container) { [self cancelImport]; [self showMessage:error.localizedDescription ?: @"无法读取备份文件"]; return; }
+    if (!_importMode) _exportSelection = [_selected copy];
+    _importMode = YES;
     _pendingContainer = container;
-    _pendingPlan = plan;
-    [self showPreview:plan.countsByCategory container:container categories:plan.categories];
-}
-
-- (void)showPreview:(NSDictionary<NSString *, NSDictionary *> *)preview container:(FDMBackupContainer *)container categories:(NSArray<NSString *> *)categories {
-    NSMutableString *text = [NSMutableString string];
-    if (container.unsupportedCategories.count) [text appendFormat:@"不支持的类别：%@\n", [container.unsupportedCategories componentsJoinedByString:@"、"]];
-    for (NSString *category in categories) {
-        NSDictionary *counts = preview[category];
-        if (!counts) { [text appendFormat:@"%@：本版本不支持\n", FDMBackupCategoryTitle(category)]; continue; }
-        [text appendFormat:@"%@：新增 %@，相同 %@，冲突 %@", FDMBackupCategoryTitle(category),
-            counts[@"added"], counts[@"identical"], counts[@"conflict"]];
-        if ([counts[@"downgraded"] integerValue] > 0) [text appendFormat:@"，权限降为询问 %@", counts[@"downgraded"]];
-        if ([counts[@"disabled"] integerValue] > 0) [text appendFormat:@"，默认禁用 %@", counts[@"disabled"]];
-        [text appendString:@"\n"];
+    _pendingPlan = nil;
+    NSMutableArray *contents = [NSMutableArray array];
+    NSArray *available = FDMBackupCoordinator.shared.availableCategories;
+    _selected = [NSMutableSet set];
+    for (NSString *category in FDMBackupCategoryOrder()) if (container.categories[category]) {
+        [contents addObject:category];
+        if ([available containsObject:category] && FDMBackupCategorySelectedByDefault(category)) [_selected addObject:category];
     }
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"导入预览" message:text preferredStyle:UIAlertControllerStyleActionSheet];
-    __weak typeof(self) weakSelf = self;
-    [sheet addAction:[UIAlertAction actionWithTitle:@"合并并保留本地冲突项" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        [weakSelf applyCategories:categories replace:NO];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"替换所选类别…" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
-        [weakSelf confirmReplace:categories];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    sheet.popoverPresentationController.sourceView = self.tableView;
-    sheet.popoverPresentationController.sourceRect = self.tableView.bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
+    [contents addObjectsFromArray:container.unsupportedCategories];
+    _categories = [contents copy];
+    self.title = @"恢复备份";
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"取消" style:UIBarButtonItemStylePlain target:self action:@selector(cancelImport)];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"下一步：预览" style:UIBarButtonItemStyleDone target:self action:@selector(previewImport)];
+    [self.tableView reloadData];
 }
 
-- (void)confirmReplace:(NSArray<NSString *> *)categories {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"替换所选类别" message:@"只影响选中的类别，不清除下载文件、浏览数据或其他配置。此操作需要二次确认。" preferredStyle:UIAlertControllerStyleAlert];
+- (void)previewImport {
+    if (!_importMode || !_pendingContainer) return;
+    NSArray *ordered = [FDMBackupCategoryOrder() filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSString *category, NSDictionary *bindings) { return [self->_selected containsObject:category]; }]];
+    if (!ordered.count) { [self showMessage:@"请至少选择一个可恢复的类别"]; return; }
+    NSError *error = nil;
+    _pendingPlan = nil;
+    FDMBackupImportPlan *plan = [FDMBackupCoordinator.shared previewContainer:_pendingContainer categories:ordered replace:NO error:&error];
+    if (!plan) { [self showMessage:error.localizedDescription ?: @"无法预览备份内容"]; return; }
+    _pendingPlan = plan;
+    [self showPreview:plan];
+}
+
+- (void)showPreview:(FDMBackupImportPlan *)plan {
+    NSMutableString *text = [NSMutableString stringWithString:plan.replace ? @"替换仅作用于下列所选类别：同 ID 冲突使用备份内容，备份中缺失的本地项会删除。不会清除下载文件、浏览数据或未选类别。\n\n" : @"合并仅作用于下列所选类别；同 ID 冲突保留本地内容。\n\n"];
+    if (plan.unsupportedCategories.count) [text appendFormat:@"不支持的类别（不会恢复）：%@\n", [plan.unsupportedCategories componentsJoinedByString:@"、"]];
+    for (NSString *category in plan.categories) {
+        NSDictionary *counts = plan.countsByCategory[category];
+        [text appendFormat:@"%@：新增 %@，相同 %@，冲突 %@，不支持 %@，权限降为询问 %@，脚本禁用 %@\n", FDMBackupCategoryTitle(category),
+            counts[FDMBackupCountAdded] ?: @0, counts[FDMBackupCountIdentical] ?: @0, counts[FDMBackupCountConflict] ?: @0,
+            counts[FDMBackupCountUnsupported] ?: @0, counts[FDMBackupCountDowngraded] ?: @0, counts[FDMBackupCountDisabled] ?: @0];
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:plan.replace ? @"替换预览 · 二次确认" : @"导入差异预览" message:text preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"确认替换" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) { [weakSelf applyCategories:categories replace:YES]; }]];
+    [alert addAction:[UIAlertAction actionWithTitle:plan.replace ? @"确认替换所选类别" : @"合并并保留本地冲突项" style:plan.replace ? UIAlertActionStyleDestructive : UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        typeof(self) owner = weakSelf;
+        if (!owner || owner->_pendingPlan != plan) return;
+        [owner applyCategories:plan.categories replace:plan.replace];
+    }]];
+    if (!plan.replace) [alert addAction:[UIAlertAction actionWithTitle:@"替换所选类别…" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        typeof(self) owner = weakSelf;
+        if (!owner || owner->_pendingPlan != plan) return;
+        dispatch_async(dispatch_get_main_queue(), ^{ [owner confirmReplace:plan.categories]; });
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"返回类别选择" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        typeof(self) owner = weakSelf;
+        if (owner && owner->_pendingPlan == plan) owner->_pendingPlan = nil;
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消导入" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) { [weakSelf cancelImport]; }]];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-- (void)applyCategories:(NSArray<NSString *> *)categories replace:(BOOL)replace {
+- (void)confirmReplace:(NSArray<NSString *> *)categories {
+    FDMBackupImportPlan *original = _pendingPlan;
+    if (!original || original.replace || ![original.categories isEqualToArray:categories]) { [self showMessage:@"请重新预览所选类别"]; return; }
     NSError *error = nil;
-    FDMBackupImportPlan *plan = _pendingPlan;
-    if (replace) plan = [FDMBackupCoordinator.shared previewContainer:_pendingContainer categories:categories replace:YES error:&error];
-    if (!plan || ![FDMBackupCoordinator.shared applyPlan:plan error:&error]) {
-        [self showMessage:error.localizedDescription ?: @"导入失败"];
+    FDMBackupImportPlan *replacement = [FDMBackupCoordinator.shared previewContainer:_pendingContainer categories:original.categories replace:YES error:&error];
+    if (!replacement) { _pendingPlan = nil; [self showMessage:error.localizedDescription ?: @"无法预览替换内容，请重新预览"]; return; }
+    if (![replacement.categories isEqualToArray:original.categories] || ![replacement.revisionByCategory isEqualToDictionary:original.revisionByCategory]) {
+        _pendingPlan = nil;
+        [self showMessage:@"配置或可用类别在首次预览后已改变，尚未导入。请点“下一步：预览”重新查看差异。"];
         return;
     }
-    [self showMessage:@"导入完成。站点规则与脚本已按预览生效。"];
+    _pendingPlan = replacement;
+    [self showPreview:replacement];
+}
+
+- (void)applyCategories:(NSArray<NSString *> *)categories replace:(BOOL)replace {
+    FDMBackupImportPlan *plan = _pendingPlan;
+    if (!plan || plan.replace != replace || ![plan.categories isEqualToArray:categories]) { [self showMessage:@"计划与已展示的预览不一致，请重新预览"]; return; }
+    // Consume exactly the displayed immutable plan. The coordinator checks its original revisions.
+    _pendingPlan = nil;
+    NSError *error = nil;
+    if (![FDMBackupCoordinator.shared applyPlan:plan error:&error]) {
+        [self showMessage:[NSString stringWithFormat:@"%@\n请点“下一步：预览”重新查看差异。", error.localizedDescription ?: @"导入失败"]];
+        return;
+    }
+    [self cancelImport];
+    [self showMessage:@"所选类别已恢复；未选类别未改动。新增或改变的脚本保持禁用，新配置用于后续导航。"];
 }
 
 - (void)showMessage:(NSString *)message {

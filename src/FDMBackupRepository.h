@@ -70,6 +70,7 @@ NS_ASSUME_NONNULL_BEGIN
 @optional
 // Exact device-local before-image, never included in a portable backup.
 - (nullable NSData *)recoverySnapshotWithError:(NSError **)error;
+- (void)preparePublicationBarrier;
 - (BOOL)restoreRecoverySnapshot:(NSData *)snapshot error:(NSError **)error;
 @end
 

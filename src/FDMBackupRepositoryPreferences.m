@@ -1,6 +1,7 @@
 #import "FDMBackupRepositoryImpl.h"
 #import "FDMJSON.h"
 #import "FDMBackupRecovery.h"
+#import "FDMBackupReadBarrier.h"
 
 // Preference storage facts (confirmed from the binary):
 //   -[PreferenceManager encode]: archivedDataWithRootObject:self.items -> standardUserDefaults
@@ -305,6 +306,7 @@ static NSDictionary<NSString *, NSArray<NSNumber *> *> *FDMBackupIntegerPreferen
     return staged;
 }
 
+- (void)preparePublicationBarrier { FDMBackupProtectDefaults(_defaults, @"standard", @"key_preferencemanager_commonconfig"); }
 - (NSData *)recoverySnapshotWithError:(NSError **)error {
     id archive = [_defaults objectForKey:FDMBackupPreferenceCommonKey];
     if (archive && ![archive isKindOfClass:NSData.class]) { if (error) *error = FDMRepoError(@"本地偏好归档类型无效"); return nil; }

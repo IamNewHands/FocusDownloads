@@ -60,25 +60,25 @@ static NSError *FDMRepoError(NSString *message) {
     // Imported permissions never auto-grant: an explicit "allow" becomes "ask", and the number of
     // downgraded entries is reported so the preview is truthful.
     NSMutableDictionary *origins = [NSMutableDictionary dictionary];
+    NSUInteger downgraded = 0;
     for (NSString *origin in document[@"origins"]) {
         NSMutableDictionary *entry = [document[@"origins"][origin] mutableCopy];
         for (NSString *field in @[FDMPolicyCamera, FDMPolicyMicrophone]) {
-            if ([entry[field] isEqual:@"allow"]) entry[field] = @"ask";
+            if ([entry[field] isEqual:@"allow"]) { entry[field] = @"ask"; downgraded++; }
         }
         origins[origin] = entry;
     }
-    return @{@"schemaVersion": @1, @"revision": document[@"revision"], @"origins": origins};
+    return @{@"schemaVersion": @1, @"revision": document[@"revision"], @"origins": origins, @"importDowngraded": @(downgraded)};
 }
 
 - (NSDictionary<NSString *, NSNumber *> *)previewCountsForValidated:(id)validated error:(NSError **)error {
     NSDictionary *current = FDMSitePolicyStore.shared.transactionSnapshot[@"origins"] ?: @{};
-    NSUInteger added = 0, identical = 0, conflict = 0, downgraded = 0;
+    NSUInteger added = 0, identical = 0, conflict = 0, downgraded = [validated[@"importDowngraded"] unsignedIntegerValue];
     for (NSString *origin in validated[@"origins"]) {
         NSDictionary *incoming = validated[@"origins"][origin];
         NSDictionary *existing = current[origin];
         if (!existing) { added++; continue; }
         if ([existing isEqual:incoming]) identical++; else conflict++;
-        if ([incoming[FDMPolicyCamera] isEqual:@"ask"] || [incoming[FDMPolicyMicrophone] isEqual:@"ask"]) downgraded++;
     }
     return @{FDMBackupCountAdded: @(added), FDMBackupCountIdentical: @(identical),
              FDMBackupCountConflict: @(conflict), FDMBackupCountDowngraded: @(downgraded),
@@ -100,16 +100,16 @@ static NSError *FDMRepoError(NSString *message) {
         origins[origin] = incoming;
     }
     unsigned long long revision = [before[@"revision"] unsignedLongLongValue];
-    // restoreDocument:publish: writes the document verbatim, so the staged after snapshot carries the
-    // same revision the store will hold. Bumping it here would break the coordinator's read-back.
-    NSDictionary *after = @{@"schemaVersion": @1, @"revision": @(revision), @"origins": origins};
+    BOOL changed = ![origins isEqual:before[@"origins"]];
+    if (changed && revision >= 9007199254740991ULL) { if (error) *error = FDMRepoError(@"站点版本已到上限，未改配置"); return nil; }
+    NSDictionary *after = @{@"schemaVersion": @1, @"revision": @(revision + (changed ? 1 : 0)), @"origins": origins};
     NSData *afterPayload = FDMJSONCanonicalData(after, error);
     if (!afterPayload) return nil;
     FDMBackupPolicyStagedSet *staged = [[FDMBackupPolicyStagedSet alloc] init];
     staged.beforeDocument = before;
     staged.afterDocument = after;
     staged.expectedRevision = revision;
-    staged.afterRevision = revision;
+    staged.afterRevision = [after[@"revision"] unsignedLongLongValue];
     staged.exactBeforeDocument = before;
     staged.beforeSnapshot = FDMJSONCanonicalData(before, NULL) ?: [NSData data];
     staged.afterSnapshot = afterPayload;

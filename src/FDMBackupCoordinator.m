@@ -2,6 +2,7 @@
 #import "FDMBackupRepositoryImpl.h"
 #import "FDMBackupSQL.h"
 #import "FDMBackupRecovery.h"
+#import "FDMBackupReadBarrier.h"
 #import "FDMJSON.h"
 #import "FDMPolicy.h"
 
@@ -99,10 +100,10 @@ static NSDictionary *FDMReadJournalMap(NSDictionary *map, NSArray *categories, N
     NSMutableSet *domains = [NSMutableSet set];
     for (NSString *category in categories) { NSString *domain = [_repositories[category] storageDomain]; if (domain.length) [domains addObject:domain]; }
     if (domains.count > 1) { if (error) *error = FDMBackupFailure(@"本版本不支持跨多个数据库恢复"); return NO; }
-    if (!domains.count) return block();
+    if (!domains.count) return FDMBackupInternalAccess(block);
     id database = _databases[domains.anyObject];
     if (![database respondsToSelector:@selector(performExclusiveAccess:error:)]) { if (error) *error = FDMBackupFailure(@"数据库没有恢复写入屏障"); return NO; }
-    return [database performExclusiveAccess:block error:error];
+    return [database performExclusiveAccess:^BOOL { return FDMBackupInternalAccess(block); } error:error];
 }
 - (NSData *)exportCategories:(NSArray *)input error:(NSError **)error {
     NSArray *categories = FDMOrderedCategories(input, error); if (!categories) return nil;
@@ -169,10 +170,15 @@ static NSDictionary *FDMReadJournalMap(NSDictionary *map, NSArray *categories, N
     NSArray *categories = FDMOrderedCategories(plan.categories, error); if (!categories) return NO;
     [self recoverInterruptedTransaction]; if (_recoveryBlocked) { if (error) *error = FDMBackupFailure(_recoveryNotice); return NO; }
     [_lock lock]; __block NSError *failure = nil; __block BOOL applied = NO;
+    FDMBackupBeginReadBarrier();
     BOOL entered = [self exclusiveCategories:categories block:^BOOL {
         NSMutableDictionary *steps = [NSMutableDictionary dictionary], *before = [NSMutableDictionary dictionary], *after = [NSMutableDictionary dictionary], *exact = [NSMutableDictionary dictionary];
         NSUInteger budget = 0;
         @try {
+            for (NSString *category in categories) {
+                id<FDMBackupRepository> repository = _repositories[category];
+                if ([repository respondsToSelector:@selector(preparePublicationBarrier)]) [repository preparePublicationBarrier];
+            }
             for (NSString *category in categories) {
                 id<FDMBackupRepository> repository = _repositories[category]; NSString *revision = [repository currentRevisionWithError:&failure];
                 if (!revision || ![revision isEqual:plan.revisionByCategory[category]]) { failure = FDMBackupFailure(@"配置在预览后已改变，请重新预览"); return NO; }
@@ -211,12 +217,24 @@ static NSDictionary *FDMReadJournalMap(NSDictionary *map, NSArray *categories, N
                 NSData *check = [repository exportSnapshotWithRevision:NULL error:&failure];
                 if (![check isEqual:after[category]]) { failure = FDMBackupFailure([NSString stringWithFormat:@"%@ 读回与预览不一致", FDMBackupCategoryTitle(category)]); ok = NO; break; }
             }
-            if (ok) { journal[@"stage"] = @"committed"; ok = FDMWriteDurableJSON(journal, _journalPath, &failure); }
+            if (ok) {
+                journal[@"stage"] = @"committed";
+                ok = FDMBackupReadBarrierCommit(^BOOL { return FDMWriteDurableJSON(journal, _journalPath, &failure); });
+                if (!ok && !failure) failure = FDMBackupFailure(@"恢复期间配置被修改，恢复已回滚；请重新预览");
+            }
         } @catch (NSException *exception) { ok = NO; failure = FDMBackupFailure(@"恢复执行异常，正在回滚前像"); }
         if (!ok) {
+            // A durable rollbackPending marker is installed before any reverse write.
+            journal[@"stage"] = @"rollbackPending";
+            if (!FDMWriteDurableJSON(journal, _journalPath, NULL)) {
+                _recoveryBlocked = YES; _recoveryNotice = @"恢复记录无法写入回滚状态，已保持配置保护，请重新启动重试。"; return NO;
+            }
             BOOL restored = [self restoreImages:before exact:exact categories:touched steps:steps error:NULL];
             _recoveryBlocked = !restored;
-            if (!restored) _recoveryNotice = @"恢复失败且前像回滚未完成。配置已受保护，请重新启动重试；恢复记录保持原样。";
+            if (!restored) {
+                _recoveryNotice = @"恢复失败且前像回滚未完成。配置已受保护，请重新启动重试；恢复记录保持原样。";
+                journal[@"stage"] = @"rollbackFailed"; FDMWriteDurableJSON(journal, _journalPath, NULL);
+            }
             if (restored) { journal[@"stage"] = @"rolledBack"; FDMWriteDurableJSON(journal, _journalPath, NULL);
                 [[NSFileManager defaultManager] removeItemAtPath:_journalPath error:NULL]; }
             [FDMSitePolicyStore.shared finishRecoveryPublication:restored];
@@ -224,7 +242,9 @@ static NSDictionary *FDMReadJournalMap(NSDictionary *map, NSArray *categories, N
         }
         [FDMSitePolicyStore.shared finishRecoveryPublication:YES];
         applied = YES; return YES;
-    } error:&failure]; [_lock unlock];
+    } error:&failure];
+    FDMBackupFinishReadBarrier(applied || !_recoveryBlocked);
+    [_lock unlock];
     if (entered && applied) {
         for (NSString *category in categories) [_repositories[category] reloadHostCache];
         [[NSFileManager defaultManager] removeItemAtPath:_journalPath error:NULL];
@@ -254,15 +274,17 @@ static NSDictionary *FDMReadJournalMap(NSDictionary *map, NSArray *categories, N
         }
     }
     NSString *stage = FDMJSONStringValue(journal[@"stage"]);
-    if (!images || !categories || ![@[@"prepared", @"committed", @"rolledBack", @"rollbackFailed"] containsObject:stage]) {
+    if (!images || !categories || ![@[@"prepared", @"committed", @"rolledBack", @"rollbackPending", @"rollbackFailed"] containsObject:stage]) {
         _recoveryBlocked = YES; _recoveryNotice = @"恢复记录格式或前像校验失败，已保留记录并暂停配置启动。"; [_lock unlock]; return;
     }
     if ([stage isEqual:@"committed"] || [stage isEqual:@"rolledBack"]) { [[NSFileManager defaultManager] removeItemAtPath:_journalPath error:NULL]; [_lock unlock]; return; }
+    FDMBackupBeginReadBarrier();
     [FDMSitePolicyStore.shared beginRecoveryPublication];
     BOOL restored = [self exclusiveCategories:categories block:^BOOL {
         return [self restoreImages:images exact:exact categories:categories steps:@{} error:&failure];
     } error:&failure];
     [FDMSitePolicyStore.shared finishRecoveryPublication:restored];
+    FDMBackupFinishReadBarrier(restored);
     if (restored) { for (NSString *category in categories) [_repositories[category] reloadHostCache];
         [[NSFileManager defaultManager] removeItemAtPath:_journalPath error:NULL]; _recoveryNotice = @"已从中断的恢复事务还原原配置。"; }
     else { _recoveryBlocked = YES; _recoveryNotice = @"中断事务的前像仍无法完整恢复。已保持配置保护与原恢复记录。"; }

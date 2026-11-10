@@ -2,6 +2,7 @@
 #import "FDMBackupSQL.h"
 #import "FDMJSON.h"
 #import "FDMBackupRecovery.h"
+#import "FDMBackupReadBarrier.h"
 
 static NSError *FDMRepoError(NSString *message) {
     return [NSError errorWithDomain:@"FocusDM.Backup.Repository" code:1 userInfo:@{NSLocalizedDescriptionKey: message}];
@@ -41,6 +42,16 @@ static NSString *FDMBackupScriptColumnForKey(NSString *key) {
     return key;
 }
 
+static BOOL FDMScriptMetadataEqual(NSDictionary *local, NSDictionary *incoming) {
+    if (![FDMJSONStringValue(local[@"content"]) isEqual:incoming[@"content"]]) return NO;
+    for (NSString *key in FDMBackupScriptMetadataKeys()) {
+        id before = local[FDMBackupScriptColumnForKey(key)], after = incoming[key];
+        if (before == NSNull.null || ([before isKindOfClass:NSString.class] && ![before length])) before = nil;
+        if (after == NSNull.null || ([after isKindOfClass:NSString.class] && ![after length])) after = nil;
+        if ((before || after) && ![before isEqual:after]) return NO;
+    }
+    return YES;
+}
 @interface FDMBackupScriptStagedSet : NSObject <FDMBackupStagedSet>
 @property (nonatomic, copy) NSData *beforeSnapshot;
 @property (nonatomic, copy) NSData *afterSnapshot;
@@ -104,7 +115,7 @@ static NSString *FDMBackupScriptColumnForKey(NSString *key) {
         add(@"content", script[@"content"]);
         add(@"isActive", script[@"enabled"] ?: @0);
         add(@"ppOrder", @0);
-        if (script[@"ppOrder"]) add(@"ppOrder", script[@"ppOrder"]);
+
         NSString *now = [NSString stringWithFormat:@"%.0f", NSDate.date.timeIntervalSince1970];
         add(@"updateTime", now);
         add(@"ctime", now);
@@ -194,6 +205,7 @@ static NSString *FDMBackupScriptColumnForKey(NSString *key) {
     if (!scripts || scripts.count > FDMBackupMaxScripts) { if (error) *error = FDMRepoError(@"脚本数量超出上限"); return nil; }
     NSMutableArray *validated = [NSMutableArray array];
     NSMutableSet *ids = [NSMutableSet set];
+    NSMutableSet *fileNames = [NSMutableSet set];
     NSSet *allowed = [NSSet setWithArray:[@[@"id", @"content", @"enabled"] arrayByAddingObjectsFromArray:FDMBackupScriptMetadataKeys()]];
     for (id raw in scripts) {
         NSDictionary *row = FDMJSONObjectValue(raw);
@@ -207,6 +219,9 @@ static NSString *FDMBackupScriptColumnForKey(NSString *key) {
         if (!identifier.length || identifier.length > 128 || [identifier rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"] invertedSet]].location != NSNotFound) { if (error) *error = FDMRepoError(@"脚本缺少有效标识"); return nil; }
         if ([ids containsObject:identifier]) { if (error) *error = FDMRepoError(@"脚本标识重复"); return nil; }
         [ids addObject:identifier];
+        NSString *fileName = [self fileNameForID:identifier];
+        if (!fileName || [fileNames containsObject:fileName]) { if (error) *error = FDMRepoError(@"脚本标识映射到同一源文件，未进行恢复"); return nil; }
+        [fileNames addObject:fileName];
         if (!name.length || [name lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > FDMBackupMaxNameBytes) {
             if (error) *error = FDMRepoError(@"脚本名称无效");
             return nil;
@@ -259,8 +274,7 @@ static NSString *FDMBackupScriptColumnForKey(NSString *key) {
     for (NSDictionary *script in validated) {
         NSDictionary *existing = byID[script[@"id"]];
         if (!existing) { added++; continue; }
-        BOOL same = [FDMJSONStringValue(existing[@"content"]) isEqual:script[@"content"]] &&
-                    [FDMJSONStringValue(existing[@"name"]) isEqual:script[@"name"]];
+        BOOL same = FDMScriptMetadataEqual(existing, script);
         if (same) identical++; else conflict++;
     }
     // Every imported script arrives disabled, so the disabled count is the import size. An unchanged,
@@ -268,9 +282,7 @@ static NSString *FDMBackupScriptColumnForKey(NSString *key) {
     NSUInteger disabled = 0;
     for (NSDictionary *script in validated) {
         NSDictionary *existing = byID[script[@"id"]];
-        BOOL unchangedEnabled = existing && [existing[@"isActive"] boolValue] &&
-            [FDMJSONStringValue(existing[@"content"]) isEqual:script[@"content"]] &&
-            [FDMJSONStringValue(existing[@"name"]) isEqual:script[@"name"]];
+        BOOL unchangedEnabled = existing && [existing[@"isActive"] boolValue] && FDMScriptMetadataEqual(existing, script);
         if (!unchangedEnabled) disabled++;
     }
     return @{FDMBackupCountAdded: @(added), FDMBackupCountIdentical: @(identical),
@@ -292,9 +304,7 @@ static NSString *FDMBackupScriptColumnForKey(NSString *key) {
     NSMutableArray *toRegenerate = [NSMutableArray array];
     for (NSDictionary *script in validated) {
         NSDictionary *existing = liveByID[script[@"id"]];
-        BOOL unchanged = existing &&
-            [FDMJSONStringValue(existing[@"content"]) isEqual:script[@"content"]] &&
-            [FDMJSONStringValue(existing[@"name"]) isEqual:script[@"name"]];
+        BOOL unchanged = existing && FDMScriptMetadataEqual(existing, script);
         if (unchanged) {
             // Same script, unchanged: keep the local row exactly, including its enabled state.
             continue;
@@ -397,12 +407,20 @@ static NSString *FDMBackupScriptColumnForKey(NSString *key) {
         if (error) *error = FDMRepoError(@"宿主缺少已验证的用户脚本模型接口"); return NO;
     }
     NSMutableArray *models = [NSMutableArray array];
+    NSMutableSet *fileNames = [NSMutableSet set];
+    for (NSDictionary *row in rows) {
+        NSString *name = [self fileNameForID:FDMJSONStringValue(row[@"uuid"])];
+        if (!name || [fileNames containsObject:name]) { if (error) *error = FDMRepoError(@"现有脚本存在源文件标识冲突"); return NO; }
+        [fileNames addObject:name];
+    }
     for (NSDictionary *row in rows) {
         NSString *name = [self fileNameForID:FDMJSONStringValue(row[@"uuid"])];
         NSString *content = FDMJSONStringValue(row[@"content"]);
         if (!name || !content.length) { if (error) *error = FDMRepoError(@"脚本内容或标识无效"); return NO; }
         NSError *modelError = nil;
-        id model = ((id (*)(id, SEL, id, NSError **))objc_msgSend)([cls alloc], initialize, row, &modelError);
+        NSMutableDictionary *modelValues = [NSMutableDictionary dictionary];
+        for (NSString *key in row) if (row[key] != NSNull.null) modelValues[key] = row[key];
+        id model = ((id (*)(id, SEL, id, NSError **))objc_msgSend)([cls alloc], initialize, modelValues, &modelError);
         if (!model) { if (error) *error = FDMRepoError(@"原生脚本模型无法还原"); return NO; }
         @try {
             ((void (*)(id, SEL))objc_msgSend)(model, fromSQL);
@@ -428,6 +446,16 @@ static NSString *FDMBackupScriptColumnForKey(NSString *key) {
     if ([manager respondsToSelector:clear]) ((void (*)(id, SEL))objc_msgSend)(manager, clear);
     for (id model in _publishedModels) ((void (*)(id, SEL, id))objc_msgSend)(manager, save, model);
     _publishedModels = nil;
+}
+- (void)preparePublicationBarrier {
+    NSString *directory = [self scriptDirectoryWithError:NULL]; if (!directory) return;
+    NSMutableDictionary *files = [NSMutableDictionary dictionary];
+    for (NSString *name in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:directory error:NULL]) {
+        if (![name.pathExtension isEqual:@"js"]) continue;
+        NSData *bytes = FDMReadBoundedFile([NSURL fileURLWithPath:[directory stringByAppendingPathComponent:name]], FDMBackupMaxScriptBytes, NULL);
+        if (bytes) files[name] = bytes;
+    }
+    FDMBackupProtectScriptFiles(directory, files);
 }
 - (NSData *)recoverySnapshotWithError:(NSError **)error {
     NSData *sql = FDMRecoverySQLSnapshot(_database, @"t_userscript", FDMBackupScriptColumns(), error); if (!sql) return nil;

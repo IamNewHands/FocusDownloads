@@ -43,12 +43,14 @@ BOOL FDMWriteDurableJSON(id object, NSString *path, NSError **error) {
     }
     if (ok && fsync(descriptor)) ok = NO;
     close(descriptor);
+    NSData *readBack = ok ? FDMReadBoundedFile([NSURL fileURLWithPath:stage], MAX((NSUInteger)1, bytes.length), error) : nil;
+    if (![readBack isEqual:bytes]) ok = NO;
     if (ok && rename(stage.fileSystemRepresentation, path.fileSystemRepresentation)) ok = NO;
     if (!ok) { unlink(stage.fileSystemRepresentation); if (error) *error = FDMError(@"恢复记录未能持久提交，配置未发布"); return NO; }
+    // Once rename succeeds the marker is the new fact. Never report a post-rename readback
+    // failure as 'not committed': that would rollback while restart trusts 'committed'.
     int directory = open(path.stringByDeletingLastPathComponent.fileSystemRepresentation, O_RDONLY);
     if (directory >= 0) { fsync(directory); close(directory); }
-    NSData *readBack = FDMReadBoundedFile([NSURL fileURLWithPath:path], MAX((NSUInteger)1, bytes.length), error);
-    if (![readBack isEqual:bytes]) { if (error) *error = FDMError(@"恢复记录读回不一致"); return NO; }
     return YES;
 }
 static BOOL FDMRecoveryTableAllowed(NSString *table) {
