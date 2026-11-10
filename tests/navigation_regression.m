@@ -80,7 +80,9 @@ static NSString *FDMNavURL(NSString *path) {
     decisionHandler(WKNavigationResponsePolicyAllow);
 }
 - (void)webView:(WKWebView *)webView didReceiveServerRedirectForProvisionalNavigation:(WKNavigation *)navigation {}
-- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {}
+- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
+    objc_setAssociatedObject(webView, @selector(webView:didFinishNavigation:), @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 - (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
     [FDMNavigationErrors addObject:[NSString stringWithFormat:@"%@:%ld %@", error.domain, (long)error.code, error.localizedDescription]];
 }
@@ -472,8 +474,11 @@ static void FDMTestTemporaryOffAndMenu(void) {
 // Selected image GETs are new user actions through the original data store; they do not replay POST.
 static void FDMTestSelectedImages(void) {
     PandaWebView *source = FDMNewWebView();
+    FDMSetCookie(source, @"1");
     [source loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:FDMNavURL(@"/plain.html")]]];
-    FDMNavCheck(FDMNavWait(20, ^BOOL { return source.URL != nil; }), @"selected image source is loaded");
+    FDMNavCheck(FDMNavWait(20, ^BOOL {
+        return [objc_getAssociatedObject(source, @selector(webView:didFinishNavigation:)) boolValue];
+    }), @"selected image source navigation actually finished");
     unsigned long long generation = FDMNavigationGeneration(source);
     __block BOOL finished = NO; __block NSUInteger count = 0; __block NSError *failure = nil;
     FDMStartSelectedPageImages(source, @[FDMNavURL(@"/image-one.png")], generation, ^(NSUInteger started, NSError *error) { count=started; failure=error; finished=YES; });
