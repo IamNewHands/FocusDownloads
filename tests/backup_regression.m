@@ -277,6 +277,8 @@ static void FDMTestJournalRecovery(void) {
 // instead of reporting success. It implements the full v2 protocol so the failure it injects is the
 // only reason the restore fails.
 @interface FDMFailingRollbackRepository : NSObject <FDMBackupRepository>
+@property NSUInteger commitCalls;
+@property NSUInteger rollbackCalls;
 @end
 
 @implementation FDMFailingRollbackRepository
@@ -325,12 +327,14 @@ static void FDMTestJournalRecovery(void) {
 }
 
 - (NSData *)commitStaged:(id)staged error:(NSError **)error {
+    _commitCalls++;
     if (error) *error = [NSError errorWithDomain:@"FocusDM.Backup.Test" code:1
                                         userInfo:@{NSLocalizedDescriptionKey: @"注入的提交失败"}];
     return nil;
 }
 
 - (BOOL)rollbackStaged:(id)staged error:(NSError **)error {
+    _rollbackCalls++;
     if (error) *error = [NSError errorWithDomain:@"FocusDM.Backup.Test" code:2
                                         userInfo:@{NSLocalizedDescriptionKey: @"注入的回滚失败"}];
     return NO;
@@ -349,7 +353,8 @@ static void FDMTestJournalRecovery(void) {
 
 static void FDMTestRollbackFailureKeepsProtection(void) {
     FDMBackupCoordinator *coordinator = [[FDMBackupCoordinator alloc] init];
-    [coordinator registerRepository:[[FDMFailingRollbackRepository alloc] init]];
+    FDMFailingRollbackRepository *failing = [FDMFailingRollbackRepository new];
+    [coordinator registerRepository:failing];
     NSData *payload = FDMBackupData(@"{\"schemaVersion\":1,\"values\":{}}");
     FDMBackupCategory *category = [FDMBackupCategory category:FDMBackupCategoryPreferences payload:payload itemCount:0];
     NSData *encoded = FDMBackupEncode(@[category], @"v20", NULL);
@@ -359,7 +364,8 @@ static void FDMTestRollbackFailureKeepsProtection(void) {
     FDMBackupImportPlan *plan = [coordinator previewContainer:container categories:@[FDMBackupCategoryPreferences] replace:NO error:&error];
     FDMBackupCheck(plan != nil, @"plan built for failing repository");
     FDMBackupCheck(![coordinator applyPlan:plan error:&error], @"apply reports failure, not success");
-    FDMBackupCheck(coordinator.recoveryNotice.length > 0, @"rollback failure keeps a protection notice");
+    FDMBackupCheck(failing.commitCalls == 1 && failing.rollbackCalls == 1, @"failing commit and rollback actually executed exactly once");
+    FDMBackupCheck(coordinator.recoveryBlocked && coordinator.recoveryNotice.length > 0, @"rollback failure keeps a protection notice");
     printf("B08 honest rollback failure passed\n");
 }
 
@@ -527,17 +533,24 @@ static void FDMTestJournalHashMismatchBlocks(void) {
     printf("B07 journal hash mismatch blocks passed\n");
 }
 
+static void FDMBackupBeginCase(NSString *label) {
+    NSString *root = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"focusdm-backup-%@-%@", label, NSUUID.UUID.UUIDString]];
+    FDMBackupCheck([[NSFileManager defaultManager] createDirectoryAtPath:root withIntermediateDirectories:YES attributes:nil error:NULL], @"fresh case directory exists");
+    setenv("FDM_TEST_DOCUMENTS", root.fileSystemRepresentation, 1);
+    FDMBackupCheck([FDMDocumentsPath() isEqual:root], @"case root is actually honored");
+    (void)FDMDirectory(@"FocusDM");
+}
 void FDMRunBackupRegression(void) {
-    FDMTestValidationRefusesBadInput();
-    FDMTestMergeAndReplace();
-    FDMTestHierarchyFidelity();
-    FDMTestJournalRecovery();
-    FDMTestJournalHashMismatchBlocks();
-    FDMTestConcurrentChangeForcesRepreview();
-    FDMTestRollbackFailureKeepsProtection();
-    FDMTestNoSecretsInContainer();
-    FDMTestScriptImportRules();
-    FDMTestPolicyDowngrade();
+    FDMBackupBeginCase(@"ValidationRefusesBadInput"); FDMTestValidationRefusesBadInput();
+    FDMBackupBeginCase(@"MergeAndReplace"); FDMTestMergeAndReplace();
+    FDMBackupBeginCase(@"HierarchyFidelity"); FDMTestHierarchyFidelity();
+    FDMBackupBeginCase(@"JournalRecovery"); FDMTestJournalRecovery();
+    FDMBackupBeginCase(@"JournalHashMismatchBlocks"); FDMTestJournalHashMismatchBlocks();
+    FDMBackupBeginCase(@"ConcurrentChangeForcesRepreview"); FDMTestConcurrentChangeForcesRepreview();
+    FDMBackupBeginCase(@"RollbackFailureKeepsProtection"); FDMTestRollbackFailureKeepsProtection();
+    FDMBackupBeginCase(@"NoSecretsInContainer"); FDMTestNoSecretsInContainer();
+    FDMBackupBeginCase(@"ScriptImportRules"); FDMTestScriptImportRules();
+    FDMBackupBeginCase(@"PolicyDowngrade"); FDMTestPolicyDowngrade();
     printf("backup regression suite passed\n");
 }
 

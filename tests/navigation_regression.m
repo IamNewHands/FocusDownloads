@@ -24,6 +24,8 @@ static NSUInteger FDMScriptLoaderCompletions;
 static WKWebpagePreferences *FDMCapturedPreferences;
 static NSInteger FDMCapturedContentMode = -1;
 static NSInteger FDMCapturedAllowsJS = -1;
+static NSMutableArray *FDMNavigationErrors;
+static NSMutableArray *FDMNavigationActions;
 
 static void FDMNavCheck(BOOL condition, NSString *message) {
     if (!condition) [NSException raise:@"FDMNavigationRegression" format:@"%@", message];
@@ -58,6 +60,7 @@ static NSString *FDMNavURL(NSString *path) {
 - (void)webView:(WKWebView *)webView decidePolicyForNavigationAction:(WKNavigationAction *)action
     preferences:(WKWebpagePreferences *)preferences
     decisionHandler:(void (^)(WKNavigationActionPolicy, WKWebpagePreferences *))decisionHandler {
+    [FDMNavigationActions addObject:[NSString stringWithFormat:@"%@ %@", action.request.HTTPMethod, action.request.URL]];
     if (action.targetFrame.isMainFrame || !action.targetFrame) {
         FDMCapturedPreferences = preferences;
         // The hook mutates this same preferences object before forwarding the decision, so the
@@ -75,6 +78,14 @@ static NSString *FDMNavURL(NSString *path) {
 }
 - (void)webView:(WKWebView *)webView didReceiveServerRedirectForProvisionalNavigation:(WKNavigation *)navigation {}
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {}
+- (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
+    [FDMNavigationErrors addObject:[NSString stringWithFormat:@"%@:%ld %@", error.domain, (long)error.code, error.localizedDescription]];
+}
+- (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
+    [FDMNavigationErrors addObject:[NSString stringWithFormat:@"%@:%ld %@", error.domain, (long)error.code, error.localizedDescription]];
+}
+- (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView { [FDMNavigationErrors addObject:@"WebContent process terminated"]; }
+
 @end
 
 // The browser controller: media permission is added as a new method by the hook installer.
@@ -172,7 +183,7 @@ static NSArray<NSDictionary *> *FDMFetchServerLog(void) {
         }];
     [task resume];
     FDMNavWait(15, ^BOOL { return finished; });
-    if (!payload) return @[];
+    FDMNavCheck(finished && payload.length > 0, @"loopback log endpoint is unreachable from the simulator");
     id parsed = [NSJSONSerialization JSONObjectWithData:payload options:0 error:nil];
     return [parsed isKindOfClass:NSArray.class] ? parsed : @[];
 }
@@ -202,6 +213,8 @@ static PandaWebView *FDMNewWebView(void) {
     WebViewNavDelegate *delegate = [WebViewNavDelegate new];
     webView.navigationDelegate = delegate;
     objc_setAssociatedObject(webView, @selector(FDMNavigationTabID), delegate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    UIWindow *window = UIApplication.sharedApplication.windows.firstObject;
+    [window.rootViewController.view addSubview:webView];
     return webView;
 }
 
@@ -219,13 +232,13 @@ static void FDMSetCookie(WKWebView *webView, NSString *value) {
     NSHTTPCookie *cookie = [NSHTTPCookie cookieWithProperties:@{
         NSHTTPCookieName: @"fdm_nav",
         NSHTTPCookieValue: value,
-        NSHTTPCookieDomain: @"127.0.0.1",
+        NSHTTPCookieDomain: @"localhost",
         NSHTTPCookiePath: @"/",
         NSHTTPCookieVersion: @"0",
     }];
     __block BOOL done = NO;
     [webView.configuration.websiteDataStore.httpCookieStore setCookie:cookie completionHandler:^{ done = YES; }];
-    FDMNavWait(10, ^BOOL { return done; });
+    FDMNavCheck(FDMNavWait(10, ^BOOL { return done; }), @"WebKit cookie store never became ready");
 }
 
 static void FDMSetPolicy(NSString *origin, NSDictionary *entry) {
@@ -254,7 +267,7 @@ static void FDMTestPostDownloadOnce(void) {
         return row != nil && [row[@"state"] integerValue] == FDMStateCompleted;
     });
     NSDictionary *row = FDMRowForWebView(webView);
-    FDMNavCheck(row != nil, @"POST download created no task row");
+    FDMNavCheck(row != nil, [NSString stringWithFormat:@"POST download created no task row; actions=%@ errors=%@", FDMNavigationActions, FDMNavigationErrors]);
     FDMNavCheck([row[@"transport"] integerValue] == FDMTransportWebKitDownload,
                 @"POST download must use the WebKit transport, not a re-request");
     FDMNavCheck([row[@"method"] isEqual:@"POST"], @"task must record the original POST method");
@@ -366,7 +379,7 @@ static void FDMTestSitePreferences(void) {
 
 static void FDMTestMediaPermission(void) {
     NSString *topOrigin = FDMNormalizedOrigin(FDMTOrigin);
-    NSString *iframeOrigin = FDMNormalizedOrigin([NSString stringWithFormat:@"http://localhost:%@",
+    NSString *iframeOrigin = FDMNormalizedOrigin([NSString stringWithFormat:@"http://127.0.0.1:%@",
         [NSURLComponents componentsWithString:FDMTOrigin].port.stringValue]);
 
     BrowserViewController *browser = [BrowserViewController new];
@@ -378,7 +391,7 @@ static void FDMTestMediaPermission(void) {
     FDMSetPolicy(topOrigin, @{FDMPolicyCamera: @"allow", FDMPolicyMicrophone: @"allow"});
     FDMSetPolicy(iframeOrigin, @{FDMPolicyCamera: @"ask", FDMPolicyMicrophone: @"ask"});
     FDMFakeOrigin *origin = [FDMFakeOrigin new];
-    origin.fakeHost = @"localhost";
+    origin.fakeHost = @"127.0.0.1";
     origin.fakeProtocol = @"http";
     origin.fakePort = [NSURLComponents componentsWithString:FDMTOrigin].port.integerValue;
     FDMFakeFrame *frame = [FDMFakeFrame new];
@@ -456,7 +469,7 @@ static void FDMTestTemporaryOffAndMenu(void) {
 #pragma mark - runner
 
 void FDMRunNavigationRegression(NSString *origin) {
-    FDMTOrigin = [origin copy];
+    FDMTOrigin = [origin copy]; FDMNavigationErrors = [NSMutableArray array]; FDMNavigationActions = [NSMutableArray array];
     FDMNavCheck(FDMTOrigin.length > 0, @"TEST_ORIGIN was not supplied by the runner");
     FDMNavCheck(FDMNormalizedOrigin(FDMTOrigin).length > 0, @"TEST_ORIGIN is not a valid http origin");
 

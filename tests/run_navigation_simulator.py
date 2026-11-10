@@ -88,7 +88,7 @@ def main():
     bundle = "local.focusdm.navigation-regression.r" + uuid.uuid4().hex
     try:
         server, port, request_log = start_server(root, work)
-        origin = f"http://127.0.0.1:{port}"
+        origin = f"http://localhost:{port}"
         print(f"Navigation fixture origin: {origin}")
 
         info = {

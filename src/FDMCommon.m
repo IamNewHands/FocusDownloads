@@ -75,7 +75,8 @@ NSError *FDMError(NSString *message) {
 
 NSString *FDMDocumentsPath(void) {
 #ifdef FDM_TESTING
-    NSString *test = [NSProcessInfo processInfo].environment[@"FDM_TEST_DOCUMENTS"];
+    const char *rawTest = getenv("FDM_TEST_DOCUMENTS");
+    NSString *test = rawTest ? [NSString stringWithUTF8String:rawTest] : nil;
     if (test.length) return test;
 #endif
     return NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
