@@ -235,7 +235,7 @@ static NSDictionary *FDMReadJournalMap(NSDictionary *map, NSArray *categories, N
 - (void)recoverInterruptedTransaction {
     [_lock lock]; _recoveryBlocked = NO; _recoveryNotice = nil;
     if (![[NSFileManager defaultManager] fileExistsAtPath:_journalPath]) { [_lock unlock]; return; }
-    NSError *failure = nil; NSData *bytes = FDMReadBoundedFile([NSURL fileURLWithPath:_journalPath], FDMJournalBudget, &failure);
+    __block NSError *failure = nil; NSData *bytes = FDMReadBoundedFile([NSURL fileURLWithPath:_journalPath], FDMJournalBudget, &failure);
     NSDictionary *journal = bytes ? FDMJSONObjectValue(FDMJSONParseDataBounded(bytes, 32, FDMJournalBudget, &failure)) : nil;
     NSArray *categories = FDMOrderedCategories(journal[@"categories"], &failure); NSDictionary *images = nil, *exact = nil;
     unsigned long long version = 0;

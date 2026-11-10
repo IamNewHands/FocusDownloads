@@ -140,7 +140,7 @@ static NSString *FDMNavURL(NSString *path) {
 @end
 
 // WKSecurityOrigin has no public initializer; the hook only reads host/protocol/port.
-@interface FDMFakeOrigin : WKSecurityOrigin
+@interface FDMFakeOrigin : NSObject
 @property (nonatomic, copy) NSString *fakeHost;
 @property (nonatomic, copy) NSString *fakeProtocol;
 @property (nonatomic) NSInteger fakePort;
@@ -151,7 +151,7 @@ static NSString *FDMNavURL(NSString *path) {
 - (NSInteger)port { return self.fakePort; }
 @end
 
-@interface FDMFakeFrame : WKFrameInfo
+@interface FDMFakeFrame : NSObject
 @property (nonatomic, strong) NSURLRequest *fakeRequest;
 @property (nonatomic) BOOL fakeMainFrame;
 @end
