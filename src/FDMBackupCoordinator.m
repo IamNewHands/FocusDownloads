@@ -114,6 +114,8 @@ static NSDictionary *FDMReadJournalMap(NSDictionary *map, NSArray *categories, N
 - (NSData *)exportCategories:(NSArray *)input error:(NSError **)error {
     NSArray *categories = FDMOrderedCategories(input, error); if (!categories) return nil;
     [_lock lock]; NSMutableArray *entries = [NSMutableArray array]; __block NSError *failure = nil;
+    // ARC writes an NSError ** temporary back after this call; keep it separate from the block's error.
+    NSError *accessFailure = nil;
     BOOL ok = [self exclusiveCategories:categories block:^BOOL {
         for (NSString *category in categories) {
             id<FDMBackupRepository> repository = _repositories[category];
@@ -132,8 +134,8 @@ static NSDictionary *FDMReadJournalMap(NSDictionary *map, NSArray *categories, N
             [entries addObject:[FDMBackupCategory category:category payload:bytes itemCount:count]];
         }
         return YES;
-    } error:&failure]; [_lock unlock];
-    if (!ok) { if (error) *error = failure ?: FDMBackupFailure(@"导出读取未完成，未生成备份文件"); return nil; }
+    } error:&accessFailure]; [_lock unlock];
+    if (!ok) { if (error) *error = failure ?: accessFailure ?: FDMBackupFailure(@"导出读取未完成，未生成备份文件"); return nil; }
     return FDMBackupEncode(entries, FDMPatchVersion(), error);
 }
 - (FDMBackupContainer *)openBackupAtURL:(NSURL *)url error:(NSError **)error {

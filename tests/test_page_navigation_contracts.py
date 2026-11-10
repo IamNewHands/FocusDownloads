@@ -75,10 +75,19 @@ class PageNavigationContracts(unittest.TestCase):
         app = (ROOT / "tests/icons_app_main.m").read_text(encoding="utf-8")
         runner = (ROOT / "tests/run_icons_simulator.py").read_text(encoding="utf-8")
         fixture = (ROOT / "tests/page_navigation_regression.m").read_text(encoding="utf-8")
-        self.assertIn("FDMRunPageNavigationRegressionTests();", app)
+        self.assertIn("FDMRunPageNavigationRegressionTests(^(NSException *exception)", app)
+        self.assertIn("FDMFinishSimulatorRegression(exception);", app)
         self.assertIn("tests/page_navigation_regression.m", runner)
         for marker in ("popup-first order", "panel-first order", "nested URL form", "system child", "cancelled swipe", "successful pop"):
             self.assertIn(marker, fixture)
+
+    def test_callback_fixture_yields_main_queue_instead_of_pumping_it_recursively(self):
+        fixture = (ROOT / "tests/page_navigation_regression.m").read_text(encoding="utf-8")
+        self.assertIn("FDMRunNavigationPhases(phases, index + 1, completion)", fixture)
+        self.assertIn("dispatch_async(dispatch_get_main_queue()", fixture)
+        self.assertNotIn("CFRunLoopRunInMode", fixture)
+        self.assertNotIn("FDMDrainNavigationCallbacks", fixture)
+        self.assertIn("completion(exception);", fixture)
 
     def test_site_pages_share_navigation_without_backup_changes(self):
         sites = (ROOT / "src/FDMNativePages.m").read_text(encoding="utf-8").split("#pragma mark - backup", 1)[0]

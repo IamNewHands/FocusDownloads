@@ -31,7 +31,16 @@ class BackupExportContracts(unittest.TestCase):
         self.assertIn('FDMBackupExportFailure(category, @"读取"', export)
         self.assertIn('FDMBackupExportFailure(category, @"校验"', export)
         self.assertNotIn("exception.reason", export)
-        self.assertIn("*error = failure ?: FDMBackupFailure", export)
+        self.assertIn("*error = failure ?: accessFailure ?: FDMBackupFailure", export)
+
+    def test_export_does_not_write_back_over_its_callback_error(self):
+        text = (ROOT / "src/FDMBackupCoordinator.m").read_text(encoding="utf-8")
+        export = text.split("- (NSData *)exportCategories:", 1)[1].split("- (FDMBackupContainer *)", 1)[0]
+        self.assertIn("NSError *accessFailure = nil;", export)
+        self.assertIn("error:&accessFailure];", export)
+        self.assertNotIn("error:&failure];", export)
+        fixture = (ROOT / "tests/backup_regression.m").read_text(encoding="utf-8")
+        self.assertIn("for (NSNumber *sqlStorage in @[@NO, @YES])", fixture)
 
     def test_native_tests_cover_each_default_category_and_combined_export(self):
         text = (ROOT / "tests/backup_regression.m").read_text(encoding="utf-8")

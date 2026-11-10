@@ -1,6 +1,6 @@
 # Focus v20 Device Regressions
 
-Status: local fixes and Python checks complete; new native tests, device acceptance and IPA remain pending.
+Status: first native CI failed; follow-up fixes pass local checks and await native rerun. Device acceptance and a new IPA remain pending.
 Base commit: `dcab80e46dd498a42d023aa795caff2f4d326dc5`.
 
 ## Requirements
@@ -77,8 +77,9 @@ Implementation:
 
 ## Verification
 
-- Python source guards and full packaging/provenance regression: 74 tests passed,
-  including the one-time navigation-appearance assignment guard.
+- Initial Python source guards and full packaging/provenance regression: 74 tests passed.
+  The CI-error follow-up passes 76 local tests, including callback-error
+  writeback separation and asynchronous main-queue fixture guards.
   Initial full run failed at temporary-directory creation with Windows sandbox
   `WinError 5`; the authorized unsandboxed retry passed.
 - `git diff --check`: passed after backup and navigation edits.
@@ -89,11 +90,33 @@ Implementation:
   taps, original callbacks, released hosts, nested pages, completed return and
   cancelled return. These are wired into the simulator runner; their push spy
   records an animated request but suppresses real animation.
-- New native cases have not run on Windows. macOS CI, actual device export,
-  transition pixel/edge-swipe inspection and responsiveness remain required.
-  Python source guards do not execute UIKit or prove that these device
-  regressions are resolved.
+- CI42837951395 ran the new native tests for source
+  `a110b46b9f8863ef5bf0ee89039b486f5576aa4c`. The default host export/restore
+  shapes passed, but export diagnostics failed. UIKit failed at the first
+  completed panel cleanup action; later navigation assertions were not reached.
+  Foundation, WebKit and arm64 compilation passed.
+- The workflow's `continue-on-error` gives those two steps a success conclusion
+  while preserving their failure outcome. The aggregate gate correctly failed;
+  compiled provenance and artifact upload were skipped.
+- Actual device export, transition pixel/edge-swipe inspection and
+  responsiveness remain required. Python source guards and callback fixtures
+  do not prove that the device regressions are resolved.
 - The production restoration hooks target the verified host
   `BaseNavigationController`; arbitrary plain navigation controllers are not
   claimed to have the same host-restoration coverage.
-- No new native verification result or IPA has been produced for these changes.
+- No complete successful native verification, provenance artifact or new IPA
+  has been produced for this repair yet.
+
+## CI-Error Follow-Up
+
+- Keep the export callback's `__block NSError` separate from the
+  `NSError **` passed to the exclusive-access method. ARC's call writeback
+  otherwise overwrites the callback error with the initial nil temporary.
+  Native diagnostic cases now cover both non-SQL and actual SQL access.
+- The UIKit fixture previously entered a nested run loop inside a main-queue
+  block, then expected another main-queue block to have run. It now schedules
+  assertion phases across actual main-queue turns and reports asynchronous
+  exceptions through the fixture result callback. Production's next-turn
+  navigation action is unchanged.
+- Keep every original positive and negative assertion and the native publication
+  gate. The follow-up still needs a successful macOS CI run before packaging.

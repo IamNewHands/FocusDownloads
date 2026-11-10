@@ -93,10 +93,11 @@ static NSString *FDMBackupRowValue(id<FDMBackupSQLDatabase> database, NSString *
 
 @interface FDMExportFailureRepository : FDMBackupBookmarkRepository
 @property (nonatomic) BOOL raisesDuringValidation;
+@property (nonatomic) BOOL usesSQLStorage;
 @end
 @implementation FDMExportFailureRepository
 - (BOOL)isAvailable { return YES; }
-- (NSString *)storageDomain { return nil; }
+- (NSString *)storageDomain { return _usesSQLStorage ? [super storageDomain] : nil; }
 - (NSData *)exportSnapshotWithRevision:(NSString **)revision error:(NSError **)error {
     return _raisesDuringValidation ? FDMBackupData(@"{\"schemaVersion\":1,\"items\":[]}") : nil;
 }
@@ -196,18 +197,26 @@ static void FDMTestHostDefaultExportShapes(void) {
 }
 
 static void FDMTestExportFailureDiagnostics(void) {
-    FDMBackupCoordinator *coordinator = [FDMBackupCoordinator new];
-    FDMExportFailureRepository *repository = [[FDMExportFailureRepository alloc] initWithDatabase:nil];
-    [coordinator registerRepository:repository];
+    NSString *path = [FDMDocumentsPath() stringByAppendingPathComponent:@"export-diagnostics.sqlite"];
     NSError *error = nil;
-    FDMBackupCheck(![coordinator exportCategories:@[FDMBackupCategoryBookmarks] error:&error] &&
-        [error.localizedDescription containsString:@"书签"] && [error.localizedDescription containsString:@"读取"],
-        @"missing repository error still identifies category and read stage");
-    repository.raisesDuringValidation = YES;
-    error = nil;
-    FDMBackupCheck(![coordinator exportCategories:@[FDMBackupCategoryBookmarks] error:&error] &&
-        [error.localizedDescription containsString:@"校验"] && ![error.localizedDescription containsString:@"private fixture"],
-        @"host exception becomes bounded validation diagnostic without private reason");
+    FDMSQLiteFixtureDatabase *database = [[FDMSQLiteFixtureDatabase alloc] initWithPath:path error:&error];
+    FDMBackupCheck(database && !error, @"export diagnostic database opened");
+    for (NSNumber *sqlStorage in @[@NO, @YES]) {
+        FDMBackupCoordinator *coordinator = [FDMBackupCoordinator new];
+        FDMExportFailureRepository *repository = [[FDMExportFailureRepository alloc] initWithDatabase:database];
+        repository.usesSQLStorage = sqlStorage.boolValue;
+        [coordinator registerRepository:repository database:database];
+        error = nil;
+        FDMBackupCheck(![coordinator exportCategories:@[FDMBackupCategoryBookmarks] error:&error] &&
+            [error.localizedDescription containsString:@"书签"] && [error.localizedDescription containsString:@"读取"],
+            @"missing repository error still identifies category and read stage");
+        repository.raisesDuringValidation = YES;
+        error = nil;
+        FDMBackupCheck(![coordinator exportCategories:@[FDMBackupCategoryBookmarks] error:&error] &&
+            [error.localizedDescription containsString:@"校验"] && ![error.localizedDescription containsString:@"private fixture"],
+            @"host exception becomes bounded validation diagnostic without private reason");
+    }
+    [database close];
     printf("export failure diagnostics passed\n");
 }
 

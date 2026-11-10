@@ -1,101 +1,68 @@
-# FocusDM — Focus 浏览器下载管理、站点策略与选择性备份
+# FocusDM v20 — Focus 2.9.7 补丁
 
-为 Focus 2.9.7（`com.qingbin.focusbrowser`）注入纯 ObjC dylib；不编译期链接 Swift 私有符号。补丁版本 **v20**，最低系统 **iOS14**。
+纯 Objective-C 注入库，目标 `com.qingbin.focusbrowser`。最低 iOS 14；网页原请求下载与本页图片需要 iOS 14.5+，媒体权限策略需要 iOS 15+。
 
-## 三个功能与边界
+## 使用入口
 
-**v20 尚在实施与验证，当前无可安装产物。** 下面是目标清单，不是验收结果。2026-11-09 接续核对发现原导航下载、站点部分接线与备份回滚尚不满足契约；进度见 [当前 checkpoint](<docs/aegis/work/2026-11-09-focus-v20-plan-implementation/20-checkpoint.md>)。用户手机仍是稳定 v19。
+- **下载管理**：原下载菜单或设置页；手动直链、网页下载和选中图片显示在同一管理页。
+- **网站设置**：当前网页菜单；**网站规则**：设置页中的全站规则列表。
+- **下载本页图片**：当前网页菜单，逐项选择并确认数量。
+- **数据备份**：设置页，勾选类别导出；导入先选文件和类别，再看差异预览。用户脚本默认不选。
 
-| 功能 | 目标（未验收） | 明确不做 |
+## 功能与限制
+
+| 功能 | 当前实现 | 明确限制 |
 |---|---|---|
-| ① 统一下载 | 手动直链与页内下载进同一管理页；来源站点/传输类型可见；可恢复任务；等待队列（上限 500）与可重放 GET 并发 1–6；按名称/来源搜索并按状态筛选；批量入队（单次 ≤100） | 万能视频解析、DRM、无限后台、多线程分片 |
-| ④ 站点策略 | 精确 origin（scheme+host+port）的 UA/桌面模式/缩放/阅读/拦截/网页JS/用户脚本/外跳/摄像头/麦克风；原生规则列表与单站编辑页；“继承”不落盘；“本次关闭增强”只作用于当前 WebView | 重造翻译/Reader/拦截引擎、完整多身份容器、全局 VPN |
-| ⑤ 选择性备份 | `.browserbackup` 单文件 JSON 容器；书签/搜索配置/站点策略/白名单偏好默认选中，用户脚本默认不选；导入前完整校验与差异预览；合并或替换所选类别；prepare/journal/回滚 | 账号密码/Cookie 迁移、恢复原 CloudKit、自动云同步 |
+| 下载 | 来源与传输类型、搜索/状态筛选、手动 GET 队列、批量直链、本页图片、暂停/可用续传、两种删除方式 | 可重放 GET 并发 1–6，默认 3；队列 500、每批 100。原网页 WKDownload 不承诺相同后台能力或并发限制 |
+| 站点策略 | 精确 `scheme://host:effectivePort`；桌面/移动模式、UA、缩放、Reader、内容拦截、页面 JS、用户脚本、外部 App、摄像头/麦克风；当前标签临时关闭增强 | 不向子域继承；不改变系统 TCC、TLS。宿主 Reader/脚本/拦截能力沿原实现，非重造引擎 |
+| 本地备份 | 书签、首页快捷项、搜索配置、站点策略、白名单偏好、可选脚本；差异预览、保留本地冲突或替换所选类别、失败回滚/启动恢复 | `.browserbackup` 不加密。不恢复 Cookie、账号密码、CloudKit 权限或活动网络会话；不自动上传 |
 
-### ① 下载：请求来源与传输
+### 请求与数据
 
-三种传输按请求自身条件选择，不靠扩展名猜：
+- 原网页下载响应使用 `WKNavigationResponsePolicyDownload` 接管，POST/单次票据不重放为 GET。
+- 图片选择是用户明确发起的新请求，沿来源 WebView 上下文；不是重新请求已经发出的 POST。
+- 匿名后台会话禁用环境 Cookie/凭据共享。带 query、片段或非白名单请求头的手动 GET 不进入匿名后台。
+- 新请求秘密与平台续传数据只进进程内存或设备本地 Keychain，公共历史不保存原请求秘密。退出后缺少上下文的网页任务要求回来源重新发起，不自动切换运输器。
+- “仅删记录”保留成品；“删除记录与所属文件”只处理身份已确认的成品。不清旧下载目录、历史或图标缓存。
 
-| 运输器 | 适用 | 限制 |
-|---|---|---|
-| `anonymousBackground` | 无 Cookie/秘密头、可重放的同源 GET | 后台会话已关闭自动 Cookie 共享；重定向由系统自动跟随 |
-| `credentialedSession` | 需要 Cookie/Auth 的可重放 GET | 每 intent 一个 ephemeral 会话；跨 origin 302 与 HTTPS→HTTP 默认拒绝 |
-| `webKitDownload` | POST、单次票据、页面生成资源 | 不重放请求；不保证 Blob/MSE/DRM |
+### 备份恢复
 
-请求上下文（Cookie、Auth、body）只存在于进程内的 `FDMIntentRegistry`，不写进 `tasks.json`、历史或备份。恢复后没有请求上下文的行显示“需要重新发起”，不会退化成匿名 GET 重试。
+导入先校验完整文件，再选类别，显示新增/相同/冲突/不支持/权限降级/脚本禁用数量。默认合并保留本地同 ID 冲突；替换展示单独预览并二次确认，执行使用已展示计划，不在确认时悄悄换版本。
 
-调度器只管尚未发起的可重放 GET：先持久化等待行再创建传输，`schedulerStatus` 为 `waiting/running/userPaused/needsContext`；并发槽在回调真正收敛后才释放。
+原宿主 SQLite、NSUserDefaults、站点策略仍各自拥有数据；恢复只保留事务期间的本地前像和读取快照，不另建运行期配置库。提交前记录 prepared；回滚先记录 rollbackPending。回滚失败保留记录与保护界面，不能把混合配置当正常启动。
 
-**删除有两种明确语义：**仅删除记录（保留成品与续传候选）／删除记录与所属文件（只删身份未变的一个文件）。
+新增/改变脚本禁用，原文 `.js` 与元数据读回校验；摄像头/麦克风 Allow 导入降为 Ask。相同脚本必须包含完整元数据等价，不能只比较名称和代码。
 
-### ④ 站点策略
+限额：文件 32 MiB、解码总量 16 MiB、单类别 8 MiB、JSON 深度 32、书签 10000、脚本 200/单条 1 MiB。base64 不是加密，SHA256 不是来源认证；书签 URL 与脚本仍可能含私密信息。
 
-`Documents/FocusDM/site-policies.json` 是唯一真源，字段省略或 `inherit` 表示沿用全局。UA 覆盖在 `Tab updateUserAgentWithURL:` 之后应用，所以移除覆盖会回到**当前**全局 UA 而不是硬编码 nil；缩放覆盖同理接在 `applyWebScaleForCurrentURL` 之后。
+## 验证与交付状态
 
-文件格式未知或损坏时保留原文件并暂停写入，UI 顶部直接说明原因，不会清空后覆盖成默认。
+当前进度与精确来源见 [checkpoint](<docs/aegis/work/2026-11-09-focus-v20-plan-implementation/20-checkpoint.md>)，执行证据见 [证据记录](<docs/aegis/work/2026-11-09-focus-v20-plan-implementation/90-evidence.md>)。
 
-### ⑤ 备份与恢复
+截至 2026-11-10，用户已安装 v20，并反馈备份导出失败、页面进入时顶部闪透和侧滑退出残留。**这些真机问题尚未验收通过，不能用旧包或编译成功替代验收。**
 
-导出顺序：解析 → 校验 → base64 边界 → 长度/哈希 → 写入临时文件 → 读回校验 → 系统分享。导入顺序：完整解析 → 类别差异预览 → 按类别 prepare（含 revision 检查）→ journal → 逐类提交 → 读回校验 → committed marker → 一次性发布。
+- 原始 v20 来源 `1de62778369a7c9f24280db9eeb2832ff3c34bfe` / CI42813107978 已完成其对应的原生、WebKit 和包装验证；这是历史批次，不是当前源码来源。
+- 前一轮菜单修复来源 `dcab80e46dd498a42d023aa795caff2f4d326dc5`，已有旧包 `Focus_2.9.7_patched_v20_fix_dcab80e.ipa`；不包含后续导出与转场修复。
+- 本轮修复来源 `a110b46b9f8863ef5bf0ee89039b486f5576aa4c` 已推送。本地 74 项 Python 检查通过；CI42837951395 的 Foundation、WebKit、arm64 编译通过，但备份错误诊断和 UIKit 回调时序测试失败。
+- 来源清单校验和产物上传被总门禁阻止。本地已修正错误回写和异步测试时序，76 项检查通过；原生重跑仍待结果，本轮尚无可交付新 IPA，详见 [本轮记录](docs/focus-v20-device-regressions-2026-11-10.md)。
 
-始终排除 Cookie、密码、钥匙串、Authorization、下载请求与续传数据、浏览历史、缓存、无痕数据与绝对沙箱路径。base64 不是加密，SHA256 只是完整性校验。导入的摄像头/麦克风 `allow` 一律降为 `ask`；新增或变更的脚本导入后默认禁用。
+v19 图标实现与既有二进制补丁清单保持不变。原包、旧包不覆盖。
 
-中断的恢复事务在启动时按 journal 收敛：非 `committed` 阶段一律回到恢复前配置并给出提示；回滚本身失败时保持保护状态并如实报告，不假装成功。
+## 构建与打包
 
-## 首页/书签图标
-
-按已核实控件映射处理 `targetUrl/logo/logoLabel` 与 `url/logoImage/logoText`。缓存保存类型化位图或稳定文字占位，不截取加载中的整个容器。用户在 v19 真机测试确认图标缓存已正常。
-
-位图命中保留原生布局/主题处理，停止加载指示器。复用 cell、迟到回调、主题切换使用模型身份与请求代次校验。
-
-旧 `snaps` 裸 PNG 可能包含文字、底色或指示器，**保留但不自动认作可信原图**。
-
-## 构建与验证
-
-本机 Windows 不编译 iOS；GitHub Actions 在 `macos-15` 执行：
-
-1. Python 包装与契约回归（含新增 `test_v20_contracts.py`）。
-2. Foundation 原生回归：真实引擎配显式 FakeSession，覆盖任务/暂停/恢复/删除/保存时序，以及新增的严格 JSON、origin、策略 DTO、备份容器与重定向策略。
-3. UIKit 模拟器回归：测试宿主执行真实缓存代码，SDK/控件为明确夹具，不代表 Focus 真机。
-4. 编译全部 `src/*.m` 为 arm64 iOS14 dylib（链接 WebKit）。
-5. 核对库内版本/完整源提交与该提交的 tracked 源码字节，生成来源清单。
-
-```powershell
-python -m unittest discover -s tests -p 'test_*.py' -v
-```
-
-CI 产物名包含补丁版本和 Git SHA，含 `FocusDM.dylib` 与 `FocusDM.provenance.json`。重复打包时 `--source-root` 必须是来源清单 `source_sha` 对应的 checkout。
-
-## 安全打包
-
-只接收已核对的原始 Focus 2.9.7 IPA。二进制补丁清单绑定完整 SHA 与旧字节，保留既有 VIP/CloudKit 禁用/locale/书签导入/友盟禁用改动，不扩大改点。
+GitHub Actions 使用 macOS/Xcode SDK 编译 arm64，全部必要原生目标通过后才上传库与来源清单。Windows 本机不安装替代 iOS 工具链。
 
 ```powershell
 python tools/build_focus.py `
   --ipa D:\GitHub_Clone\Focus_2.9.7.ipa `
-  --dylib D:\GitHub_Clone\_artifacts\focusdm\v20-SHA\FocusDM.dylib `
-  --provenance D:\GitHub_Clone\_artifacts\focusdm\v20-SHA\FocusDM.provenance.json `
+  --dylib <CI下载目录>\FocusDM.dylib `
+  --provenance <CI下载目录>\FocusDM.provenance.json `
   --source-root D:\GitHub_Clone\FocusDownloads `
   --out D:\GitHub_Clone\Focus_2.9.7_patched_v20.ipa
 ```
 
-输出必须是新路径，不允许覆盖旧包。注入库、载入命令、资源、最低系统、ZIP 和补丁读回全部校验。
+输出必须不存在。打包器验证原 IPA SHA、Mach-O 加载命令、来源提交/源码字节、允许的二进制差异、所有资源及 ZIP 读回；不扩大既有 VIP/CloudKit/统计补丁改点。
 
-**安装需 LCSign 重签**，签名后覆盖安装由用户执行。CloudKit 重签权限仍不可恢复；禁用只是防崩，不是恢复同步。不要把 Python/CI 编译通过当成真机首帧、续传或主题验收。
+**新包准备好后，由用户使用 LCSign 重签。** 沿用当前安装的 bundle ID/签名方案覆盖安装，先备份重要数据；不要先卸载当前版本，否则其应用容器可能被删除。重签不能恢复原应用 CloudKit entitlement。
 
-## 数据与诊断
-
-| 路径（`Documents/FocusDM/`） | 内容 |
-|---|---|
-| `downloads/` | 自建下载成品 |
-| `tasks.json` | 进行中任务清单（不含请求秘密） |
-| `history.json` | 已完成/失败记录，永久保留 |
-| `resume/` | 断点续传数据 |
-| `site-policies.json` | 站点策略唯一真源 |
-| `backup-journal.json` | 进行中的恢复事务，成功后删除 |
-| `diagnostics-v20.log` | 有界、脱敏日志 |
-
-旧任务/历史数组和旧续传文件保留兼容。未知或损坏存储文件不静默覆盖。新日志只记录 taskID、代次、运输类型、method、origin、状态与 header **名称**，不记录 header 值、Cookie、请求体或含敏感 query 的 URL。
-
-真机仍需覆盖：站点策略跨站隔离与缩放手感、网页下载进入统一列表、登录站下载、批量入队、备份导出/导入与冲突选择、强杀后 journal 恢复。
-
+真机待验证范围：实际 Focus 菜单与宿主缓存重载、Reader/拦截组合、真实设备强杀/后台续传及旧 iOS 版本、VoiceOver 与大字号。Blob/MSE/DRM 不承诺支持。
