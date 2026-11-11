@@ -7,6 +7,15 @@
 
 void FDMTestInstallPageNavigationHooks(void);
 
+static UIView *FDMFirstViewWithIdentifier(UIView *root, NSString *identifier) {
+    if ([root.accessibilityIdentifier isEqualToString:identifier]) return root;
+    for (UIView *child in root.subviews) {
+        UIView *hit = FDMFirstViewWithIdentifier(child, identifier);
+        if (hit) return hit;
+    }
+    return nil;
+}
+
 @interface PreferenceView : UIView
 @property (nonatomic) NSUInteger hideCount;
 @property (nonatomic) NSUInteger cleanupCount;
@@ -288,6 +297,14 @@ void FDMRunPageNavigationRegressionTests(void (^completion)(NSException *)) {
                 FDMPrepareOwnedPage(page);
                 NSCAssert(page.navigationItem.standardAppearance == appearance, @"repeated lifecycle preparation does not replace the item's appearance");
             }
+
+            FDMSitePoliciesViewController *sitePolicies = [[FDMSitePoliciesViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+            sitePolicies.view.frame = CGRectMake(0, 0, 390, 844);
+            [sitePolicies.view layoutIfNeeded];
+            NSCAssert(!sitePolicies.navigationItem.searchController, @"site rules page keeps no navigation search controller (the host search container rendered as a clipped band)");
+            UITextField *siteSearchField = (UITextField *)FDMFirstViewWithIdentifier(sitePolicies.view, @"FDMSitePolicySearchField");
+            NSCAssert([siteSearchField isKindOfClass:UITextField.class] && siteSearchField.placeholder.length && siteSearchField.delegate == (id)sitePolicies, @"site rules page exposes an in-page search field");
+            NSCAssert(sitePolicies.tableView.tableHeaderView.bounds.size.height > 0, @"site rules search field lives in the table header, not the navigation bar");
             NSLog(@"page navigation regression PASS (callback fixtures; not Focus device pixel or gesture capture)");
         } copy]
     ];

@@ -44,9 +44,14 @@ static NSArray<NSString *> *FDMPolicyOptionsForField(NSString *field) {
 
 #pragma mark - site rules list
 
+@interface FDMSitePoliciesViewController () <UITextFieldDelegate>
+@end
+
 @implementation FDMSitePoliciesViewController {
     NSArray<NSString *> *_origins;
-    UISearchController *_search;
+    UIView *_headerView;
+    UITextField *_searchField;
+    CGSize _headerSize;
     NSString *_query;
     id _observer;
 }
@@ -56,11 +61,8 @@ static NSArray<NSString *> *FDMPolicyOptionsForField(NSString *field) {
     self.title = @"网站规则";
     FDMPrepareOwnedPage(self);
     _origins = @[];
-    _search = [[UISearchController alloc] initWithSearchResultsController:nil];
-    _search.obscuresBackgroundDuringPresentation = NO;
-    _search.searchResultsUpdater = (id)self;
-    self.navigationItem.searchController = _search;
-    self.navigationItem.hidesSearchBarWhenScrolling = NO;
+    self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
+    [self buildHeaderView];
     __weak typeof(self) weakSelf = self;
     _observer = [NSNotificationCenter.defaultCenter addObserverForName:FDMSitePolicyDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) { [weakSelf reload]; }];
     [self reload];
@@ -75,9 +77,75 @@ static NSArray<NSString *> *FDMPolicyOptionsForField(NSString *field) {
     if (_observer) [NSNotificationCenter.defaultCenter removeObserver:_observer];
 }
 
-- (void)updateSearchResultsForSearchController:(UISearchController *)controller {
-    _query = controller.searchBar.text;
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self layoutHeaderView];
+}
+
+- (void)buildHeaderView {
+    if (_headerView) return;
+    _headerView = [[UIView alloc] init];
+    _headerView.backgroundColor = UIColor.clearColor;
+
+    UIView *iconBox = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 34, 36)];
+    UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"magnifyingglass"]];
+    icon.frame = CGRectMake(12, 9, 18, 18);
+    icon.contentMode = UIViewContentModeScaleAspectFit;
+    icon.tintColor = UIColor.secondaryLabelColor;
+    [iconBox addSubview:icon];
+
+    _searchField = [[UITextField alloc] init];
+    _searchField.placeholder = @"搜索站点地址";
+    _searchField.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    _searchField.adjustsFontForContentSizeCategory = YES;
+    _searchField.textColor = UIColor.labelColor;
+    _searchField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    _searchField.returnKeyType = UIReturnKeySearch;
+    _searchField.autocorrectionType = UITextAutocorrectionTypeNo;
+    _searchField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    _searchField.leftView = iconBox;
+    _searchField.leftViewMode = UITextFieldViewModeAlways;
+    _searchField.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+    _searchField.layer.cornerRadius = 10;
+    _searchField.layer.cornerCurve = kCACornerCurveContinuous;
+    _searchField.accessibilityIdentifier = @"FDMSitePolicySearchField";
+    _searchField.accessibilityLabel = @"搜索站点";
+    _searchField.delegate = self;
+    [_searchField addTarget:self action:@selector(searchFieldChanged) forControlEvents:UIControlEventEditingChanged];
+    [_headerView addSubview:_searchField];
+}
+
+- (void)layoutHeaderView {
+    if (!_headerView) return;
+    CGFloat width = self.tableView.bounds.size.width;
+    if (width <= 0) return;
+    CGFloat inset = 16, rowHeight = 36, padding = 8;
+    _searchField.frame = CGRectMake(inset, padding, MAX(80, width - inset * 2), rowHeight);
+    _headerView.frame = CGRectMake(0, 0, width, padding + rowHeight + padding);
+    if (!CGSizeEqualToSize(_headerSize, _headerView.frame.size)) {
+        _headerSize = _headerView.frame.size;
+        self.tableView.tableHeaderView = _headerView;
+    }
+}
+
+- (void)searchFieldChanged {
+    NSString *text = [_searchField.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @"";
+    if ([text isEqualToString:_query ?: @""]) return;
+    _query = text;
     [self reload];
+}
+
+- (BOOL)textFieldShouldReturn:(UITextField *)textField {
+    [textField resignFirstResponder];
+    return YES;
+}
+
+- (BOOL)textFieldShouldClear:(UITextField *)textField {
+    if (_query.length) {
+        _query = @"";
+        [self reload];
+    }
+    return YES;
 }
 
 - (void)reload {
