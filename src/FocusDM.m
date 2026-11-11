@@ -248,16 +248,18 @@ static void FDMNavigationWillShow(id self, SEL selector, UINavigationController 
     if (FDMOriginalNavigationWillShow) ((void (*)(id, SEL, id, id, BOOL))FDMOriginalNavigationWillShow)(self, selector, navigation, controller, animated);
     __weak UINavigationController *weakNavigation = navigation;
     [navigation.transitionCoordinator animateAlongsideTransition:nil completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
-        if (!context.isCancelled) return;
         UINavigationController *current = weakNavigation;
         if (!current) return;
-        FDMFinishOwnedNavigationTransition(current, current.topViewController);
-        FDMNavigationState(current, NSSelectorFromString(@"applyNavigationBarStateForViewController:animated:"), current.topViewController, NO);
+        UIViewController *visible = context.isCancelled ? current.topViewController : current.visibleViewController;
+        visible = visible ?: current.topViewController;
+        FDMFinishOwnedNavigationTransition(current, visible);
+        FDMNavigationState(current, NSSelectorFromString(@"applyNavigationBarStateForViewController:animated:"), visible, NO);
     }];
 }
 
 static void FDMNavigationDidShow(id self, SEL selector, UINavigationController *navigation, UIViewController *controller, BOOL animated) {
-    FDMFinishOwnedNavigationTransition(navigation, controller);
+    UIViewController *visible = navigation.visibleViewController ?: navigation.topViewController ?: controller;
+    FDMFinishOwnedNavigationTransition(navigation, visible);
     if (FDMOriginalNavigationDidShow) ((void (*)(id, SEL, id, id, BOOL))FDMOriginalNavigationDidShow)(self, selector, navigation, controller, animated);
 }
 

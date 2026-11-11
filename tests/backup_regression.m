@@ -191,6 +191,14 @@ static void FDMTestHostDefaultExportShapes(void) {
     NSData *wrongURLType = FDMJSONCanonicalData(@{@"schemaVersion": @1, @"items": @[
         @{@"id": @"invalid", @"url": @42, @"fileType": @1}]}, NULL);
     FDMBackupCheck(![shortcuts validateImportPayload:wrongURLType error:NULL], @"native action does not excuse malformed URL types");
+    NSData *alookBookmark = FDMJSONCanonicalData(@{@"schemaVersion": @1, @"items": @[
+        @{@"id": @"alook-action", @"title": @"Navigator", @"url": @"alook://navigator", @"fileType": @0}]}, NULL);
+    FDMBackupCheck([bookmarks validateImportPayload:alookBookmark error:NULL] != nil,
+        @"host alook navigator action is a valid bookmark URL");
+    NSData *malformedAlookBookmark = FDMJSONCanonicalData(@{@"schemaVersion": @1, @"items": @[
+        @{@"id": @"bad-alook-action", @"url": @"alook://", @"fileType": @0}]}, NULL);
+    FDMBackupCheck(![bookmarks validateImportPayload:malformedAlookBookmark error:NULL],
+        @"alook bookmark action still requires a host");
     [defaults removePersistentDomainForName:suite];
     [database close];
     printf("host default export shapes and native root preservation passed\n");

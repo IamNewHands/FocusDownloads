@@ -25,6 +25,7 @@ class PageNavigationContracts(unittest.TestCase):
     def test_page_surface_is_prepared_before_native_push(self):
         show = self.shared.split("void FDMShowOwnedPage(", 1)[1].split("@interface FDMPreferenceClosing", 1)[0]
         self.assertLess(show.index("FDMPrepareOwnedPage(page);"), show.index("pushViewController:page animated:YES"))
+        self.assertLess(show.index("FDMApplyOwnedNavigationState(navigation, page, NO);"), show.index("pushViewController:page animated:YES"))
         self.assertIn("page.edgesForExtendedLayout = UIRectEdgeNone", self.shared)
         self.assertIn("navigation.view.clipsToBounds = YES", self.shared)
         self.assertIn("objc_getAssociatedObject(page, &FDMNavigationAppearanceKey)", self.shared)
@@ -33,8 +34,9 @@ class PageNavigationContracts(unittest.TestCase):
     def test_state_restore_uses_final_controller_and_cancel_context(self):
         will = self.host.split("static void FDMNavigationWillShow(", 1)[1].split("static void FDMNavigationDidShow(", 1)[0]
         did = self.host.split("static void FDMNavigationDidShow(", 1)[1].split("static void FDMShowDownloadPill(", 1)[0]
-        self.assertIn("if (!context.isCancelled) return;", will)
-        self.assertIn("current.topViewController", will)
+        self.assertIn("context.isCancelled ? current.topViewController : current.visibleViewController", will)
+        self.assertIn("visible = visible ?: current.topViewController", will)
+        self.assertIn("navigation.visibleViewController ?: navigation.topViewController", did)
         self.assertLess(did.index("FDMFinishOwnedNavigationTransition"), did.index("FDMOriginalNavigationDidShow"))
         self.assertNotIn("_navWasHidden", self.downloads)
         self.assertNotIn("_navSaved", self.downloads)

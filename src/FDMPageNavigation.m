@@ -107,6 +107,7 @@ void FDMShowOwnedPage(UIViewController *host, UIViewController *page) {
     FDMPrepareOwnedPage(page);
     if (navigation) {
         FDMCaptureNavigationSurface(navigation);
+        FDMApplyOwnedNavigationState(navigation, page, NO);
         [navigation pushViewController:page animated:YES];
     } else {
         UINavigationController *modal = [[UINavigationController alloc] initWithRootViewController:page];

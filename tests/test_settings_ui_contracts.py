@@ -38,6 +38,9 @@ class SettingsUIContracts(unittest.TestCase):
         for name in ("standardAppearance", "scrollEdgeAppearance", "compactAppearance", "compactScrollEdgeAppearance"):
             self.assertIn(f"page.navigationItem.{name} = appearance", self.page_navigation)
         self.assertNotIn("navigation.navigationBar.standardAppearance =", self.downloads)
+        show = self.page_navigation.split("void FDMShowOwnedPage(", 1)[1].split("@interface FDMPreferenceClosing", 1)[0]
+        self.assertLess(show.index("FDMApplyOwnedNavigationState(navigation, page, NO);"),
+                        show.index("pushViewController:page animated:YES"))
 
     def test_snapshots_wait_for_completed_appearance(self):
         page = self.downloads.split("@implementation FDMDownloadsViewController", 1)[1]

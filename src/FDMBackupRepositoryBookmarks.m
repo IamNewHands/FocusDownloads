@@ -65,6 +65,13 @@ static BOOL FDMBackupBookmarkIsRoot(NSString *identifier) {
     return [identifier isEqual:@"root"];
 }
 
+static BOOL FDMBackupBookmarkURLIsValid(NSString *value) {
+    if (FDMNormalizedOrigin(value) || [value hasPrefix:@"focus://"] ||
+        [value hasPrefix:@"javascript:"] || [value hasPrefix:@"file:"]) return YES;
+    NSURLComponents *components = [NSURLComponents componentsWithString:value];
+    return [components.scheme.lowercaseString isEqual:@"alook"] && components.host.length > 0;
+}
+
 #pragma mark - shared tree validation
 
 // Validates a bookmark-shaped item list: unique stable IDs, resolvable parents, no cycles, bounded
@@ -103,7 +110,7 @@ static NSArray<NSDictionary *> *FDMValidateBookmarkItems(NSArray *items,
         NSString *url = FDMJSONStringValue(row[@"url"]);
         if (url.length) {
             if (!FDMRepoBoundedString(url, FDMBackupMaxURLBytes, YES, error, @"地址")) return nil;
-            if (!FDMNormalizedOrigin(url) && ![url hasPrefix:@"focus://"] && ![url hasPrefix:@"javascript:"] && ![url hasPrefix:@"file:"]) {
+            if (!FDMBackupBookmarkURLIsValid(url)) {
                 if (error) *error = FDMRepoError([NSString stringWithFormat:@"地址不是有效链接：%@", url]);
                 return nil;
             }

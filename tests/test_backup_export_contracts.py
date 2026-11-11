@@ -13,6 +13,14 @@ class BackupExportContracts(unittest.TestCase):
         self.assertIn('!FDMBackupBookmarkIsRoot(identifier) && ![imported containsObject:identifier]', text)
         self.assertIn('!FDMBackupBookmarkIsRoot(identifier) && ![kept containsObject:identifier]', text)
 
+    def test_alook_navigator_is_accepted_without_opening_arbitrary_custom_schemes(self):
+        source = (ROOT / "src/FDMBackupRepositoryBookmarks.m").read_text(encoding="utf-8")
+        fixture = (ROOT / "tests/backup_regression.m").read_text(encoding="utf-8")
+        self.assertIn('isEqual:@"alook"', source)
+        self.assertIn("components.host.length > 0", source)
+        self.assertIn('@"alook://navigator"', fixture)
+        self.assertIn('@"alook://"', fixture)
+
     def test_empty_shortcut_address_is_only_valid_for_native_bookmark_action(self):
         text = (ROOT / "src/FDMBackupRepositoryBookmarks.m").read_text(encoding="utf-8")
         self.assertIn('row[@"parentID"] ||', text)
