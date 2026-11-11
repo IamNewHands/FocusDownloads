@@ -13,6 +13,7 @@
 #import "FDMNavigation.h"
 #import "FDMPageImages.h"
 #import "FDMPageNavigation.h"
+#import "FDMAdBlockUpdater.h"
 
 static NSString *const FDMDownloadsLink = @"focusdm://downloads";
 static NSString *const FDMSitePoliciesLink = @"focusdm://site-policies";
@@ -29,6 +30,7 @@ static IMP FDMOriginalHostDownload;
 static IMP FDMOriginalDidFinishLaunch;
 static IMP FDMOriginalBackgroundEvents;
 static IMP FDMOriginalDidEnterBackground;
+static IMP FDMOriginalDidBecomeActive;
 
 static void FDMInstallHostHooks(void);
 static void FDMOpenPage(UIViewController *host, UIViewController *page);
@@ -319,6 +321,9 @@ static BOOL FDMDidFinishLaunch(id self, SEL selector, UIApplication *application
     }
     BOOL result = FDMOriginalDidFinishLaunch ? ((BOOL (*)(id, SEL, id, id))FDMOriginalDidFinishLaunch)(self, selector, application, options) : YES;
     dispatch_async(dispatch_get_main_queue(), ^{ [FDMHostDownloads.shared refresh]; });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [FDMAdBlockUpdater checkAndTriggerDailyUpdateIfNeeded];
+    });
     return result;
 }
 
@@ -336,6 +341,11 @@ static void FDMDidEnterBackground(id self, SEL selector, UIApplication *applicat
     if (FDMOriginalDidEnterBackground) ((void (*)(id, SEL, id))FDMOriginalDidEnterBackground)(self, selector, application);
 }
 
+static void FDMDidBecomeActive(id self, SEL selector, UIApplication *application) {
+    if (FDMOriginalDidBecomeActive) ((void (*)(id, SEL, id))FDMOriginalDidBecomeActive)(self, selector, application);
+    [FDMAdBlockUpdater checkAndTriggerDailyUpdateIfNeeded];
+}
+
 static void FDMInstallHostHooks(void) {
     Class settings = NSClassFromString(@"SettingViewController");
     FDMInstallHook(settings, @selector(viewWillAppear:), (IMP)FDMSettingsAppear, &FDMOriginalSettingsAppear);
@@ -350,6 +360,7 @@ static void FDMInstallHostHooks(void) {
     FDMInstallHook(NSClassFromString(@"FileManager"), NSSelectorFromString(@"downloadWithUrl:title:"), (IMP)FDMHostDownload, &FDMOriginalHostDownload);
     FDMInstallNavigationCreatedCallback(^{ FDMShowDownloadPill(); });
     FDMInstallNavigationHooks();
+    [FDMAdBlockUpdater installHooks];
 }
 
 #if defined(FDM_TESTING)
@@ -376,6 +387,7 @@ __attribute__((constructor)) static void FDMInitialize(void) {
         FDMInstallHook(delegate, @selector(application:didFinishLaunchingWithOptions:), (IMP)FDMDidFinishLaunch, &FDMOriginalDidFinishLaunch);
         FDMInstallHook(delegate, @selector(application:handleEventsForBackgroundURLSession:completionHandler:), (IMP)FDMBackgroundEvents, &FDMOriginalBackgroundEvents);
         FDMInstallHook(delegate, @selector(applicationDidEnterBackground:), (IMP)FDMDidEnterBackground, &FDMOriginalDidEnterBackground);
+        FDMInstallHook(delegate, NSSelectorFromString(@"applicationDidBecomeActive:"), (IMP)FDMDidBecomeActive, &FDMOriginalDidBecomeActive);
     }
 }
 #endif
