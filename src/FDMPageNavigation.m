@@ -39,6 +39,10 @@ BOOL FDMIsOwnedNavigationPage(UINavigationController *navigation, UIViewControll
 }
 
 static void FDMPrepareNavigationPage(UIViewController *page) {
+    // Build the destination surface before UIKit snapshots it for the push.
+    // Waiting for viewDidLoad leaves one transition frame showing the browser
+    // underneath, which is especially visible below the navigation bar.
+    [page loadViewIfNeeded];
     page.edgesForExtendedLayout = UIRectEdgeNone;
     page.extendedLayoutIncludesOpaqueBars = NO;
     UINavigationBarAppearance *appearance = objc_getAssociatedObject(page, &FDMNavigationAppearanceKey);
@@ -52,11 +56,9 @@ static void FDMPrepareNavigationPage(UIViewController *page) {
         page.navigationItem.compactAppearance = appearance;
         if (@available(iOS 15.0, *)) page.navigationItem.compactScrollEdgeAppearance = appearance;
     }
-    if (page.isViewLoaded) {
-        page.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
-        page.view.opaque = YES;
-        page.view.clipsToBounds = YES;
-    }
+    page.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
+    page.view.opaque = YES;
+    page.view.clipsToBounds = YES;
 }
 
 void FDMPrepareOwnedPage(UIViewController *page) {
@@ -103,7 +105,19 @@ void FDMFinishOwnedNavigationTransition(UINavigationController *navigation, UIVi
 void FDMShowOwnedPage(UIViewController *host, UIViewController *page) {
     if (!host || !page) return;
     UINavigationController *navigation = host.navigationController;
-    if (navigation.transitionCoordinator) return;
+    id<UIViewControllerTransitionCoordinator> transition = navigation.transitionCoordinator;
+    if (transition) {
+        __weak UIViewController *weakHost = host;
+        __weak UIViewController *weakPage = page;
+        [transition animateAlongsideTransition:nil completion:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                UIViewController *currentHost = weakHost;
+                UIViewController *currentPage = weakPage;
+                if (currentHost && currentPage) FDMShowOwnedPage(currentHost, currentPage);
+            });
+        }];
+        return;
+    }
     FDMPrepareOwnedPage(page);
     if (navigation) {
         FDMCaptureNavigationSurface(navigation);
