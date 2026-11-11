@@ -44,7 +44,8 @@
 - 原始 v20 来源 `1de62778369a7c9f24280db9eeb2832ff3c34bfe` / CI42813107978 已完成其对应的原生、WebKit 和包装验证；这是历史批次，不是当前源码来源。
 - 前一轮菜单修复来源 `dcab80e46dd498a42d023aa795caff2f4d326dc5`，已有旧包 `Focus_2.9.7_patched_v20_fix_dcab80e.ipa`；不包含后续导出与转场修复。
 - 本轮修复来源 `a110b46b9f8863ef5bf0ee89039b486f5576aa4c` 已推送。本地 74 项 Python 检查通过；CI42837951395 的 Foundation、WebKit、arm64 编译通过，但备份错误诊断和 UIKit 回调时序测试失败。
-- 来源清单校验和产物上传被总门禁阻止。本地已修正错误回写和异步测试时序，76 项检查通过；原生重跑仍待结果，本轮尚无可交付新 IPA，详见 [本轮记录](docs/focus-v20-device-regressions-2026-11-10.md)。
+- 来源清单校验和产物上传被总门禁阻止。本地已修正错误回写和异步测试时序，76 项检查通过；原生重跑仍待结果，详见 [本轮记录](docs/focus-v20-device-regressions-2026-11-10.md)。
+- 下载页搜索栏来源 `84b6051feb32f3f46e9c272535bb7d4b3b682205`，CI43025283849 全部通过（Python 打包、Foundation、备份 SQLite、UIKit 图标、WebKit 导航、arm64 编译、来源校验、产物上传）。产物 `Focus_2.9.7_patched_v20_nosearchband_84b6051.ipa`，IPA SHA-256 `8e7899ed3608ac006d68592d96ae01ccf7da1cd67e78052f451320c64206febd`。
 
 v19 图标实现与既有二进制补丁清单保持不变。原包、旧包不覆盖。
 
