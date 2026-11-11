@@ -28,6 +28,15 @@ static void FDMDrainRefreshWork(void) {
     CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.02, false);
 }
 
+static UIView *FDMFirstViewWithIdentifier(UIView *root, NSString *identifier) {
+    if ([root.accessibilityIdentifier isEqualToString:identifier]) return root;
+    for (UIView *child in root.subviews) {
+        UIView *hit = FDMFirstViewWithIdentifier(child, identifier);
+        if (hit) return hit;
+    }
+    return nil;
+}
+
 static void FDMAssertOpaqueAppearance(UINavigationBarAppearance *appearance) {
     NSCAssert(appearance && !appearance.backgroundEffect, @"download navigation has no translucent effect");
     UIColor *color = [appearance.backgroundColor resolvedColorWithTraitCollection:[UITraitCollection traitCollectionWithUserInterfaceStyle:UIUserInterfaceStyleLight]];
@@ -48,7 +57,16 @@ void FDMRunDownloadUIRegressionTests(void) {
     FDMAssertOpaqueAppearance(page.navigationItem.scrollEdgeAppearance);
     FDMAssertOpaqueAppearance(page.navigationItem.compactAppearance);
     if (@available(iOS 15.0, *)) FDMAssertOpaqueAppearance(page.navigationItem.compactScrollEdgeAppearance);
-    NSCAssert(page.navigationItem.searchController && !page.navigationItem.hidesSearchBarWhenScrolling, @"search remains attached to the opaque navigation item");
+    NSCAssert(!page.navigationItem.searchController, @"download page keeps no navigation search controller (the host search container rendered as a clipped band)");
+    page.view.frame = CGRectMake(0, 0, 390, 844);
+    [page.view layoutIfNeeded];
+    UITextField *searchField = (UITextField *)FDMFirstViewWithIdentifier(page.view, @"FDMDownloadSearchField");
+    UIButton *filterButton = (UIButton *)FDMFirstViewWithIdentifier(page.view, @"FDMDownloadFilterButton");
+    NSCAssert(searchField && [searchField isKindOfClass:UITextField.class], @"download page owns an in-page search field");
+    NSCAssert(searchField.placeholder.length > 0 && searchField.delegate == (id)page, @"in-page search field is wired to the page");
+    NSCAssert(filterButton && [filterButton isKindOfClass:UIButton.class] && filterButton.menu, @"filter entry exposes a menu");
+    NSCAssert(filterButton.menu.children.count == 6, @"filter menu lists every state");
+    NSCAssert(page.tableView.tableHeaderView && CGRectGetHeight(page.tableView.tableHeaderView.frame) > 0, @"search header is the table header, not the navigation bar");
     NSCAssert(navigation.navigationBar.standardAppearance.backgroundColor == hostAppearance.backgroundColor, @"download appearance does not mutate shared host navigation");
     NSCAssert(page.snapshotCount == 0, @"loading the page does no synchronous host/store snapshot");
 

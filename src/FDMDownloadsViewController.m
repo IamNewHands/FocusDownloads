@@ -216,7 +216,7 @@ static NSString *FDMRowDetail(NSDictionary *row) {
 - (BOOL)textFieldShouldReturn:(UITextField *)field { [self submit]; return NO; }
 @end
 
-@interface FDMDownloadsViewController () <QLPreviewControllerDataSource, UISearchResultsUpdating>
+@interface FDMDownloadsViewController () <QLPreviewControllerDataSource, UITextFieldDelegate>
 @end
 @implementation FDMDownloadsViewController {
     NSArray<NSDictionary *> *_active;
@@ -228,7 +228,10 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     UIBarButtonItem *_allButton;
     UILabel *_restoringLabel;
     NSURL *_previewURL;
-    UISearchController *_search;
+    UIView *_headerView;
+    UITextField *_searchField;
+    UIButton *_filterButton;
+    CGSize _headerSize;
     NSString *_query;
     NSInteger _filter;
     BOOL _refreshReady;
@@ -258,14 +261,7 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     self.navigationItem.rightBarButtonItems = @[_addButton, _allButton, more];
     _filter = -1;
     _query = @"";
-    _search = [[UISearchController alloc] initWithSearchResultsController:nil];
-    _search.obscuresBackgroundDuringPresentation = NO;
-    _search.searchResultsUpdater = self;
-    _search.searchBar.scopeButtonTitles = @[@"全部", @"进行中", @"等待", @"已暂停", @"已完成", @"失败"];
-    _search.searchBar.delegate = (id)self;
-    self.navigationItem.searchController = _search;
-    self.navigationItem.hidesSearchBarWhenScrolling = NO;
-    self.definesPresentationContext = YES;
+    self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
     if (self.navigationController.presentingViewController && self.navigationController.viewControllers.firstObject == self) {
         self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"关闭" style:UIBarButtonItemStylePlain target:self action:@selector(closePage)];
     }
@@ -274,6 +270,9 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     _restoringLabel.adjustsFontForContentSizeCategory = YES;
     _restoringLabel.textAlignment = NSTextAlignmentCenter;
     _restoringLabel.numberOfLines = 0;
+    _restoringLabel.hidden = YES;
+    [self buildHeaderView];
+    [self updateFilterButton];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -293,6 +292,10 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     [self stopObserving];
 }
 - (void)viewDidDisappear:(BOOL)animated { [super viewDidDisappear:animated]; [self stopObserving]; }
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self layoutHeaderView];
+}
 - (void)dealloc { [self stopObserving]; }
 - (void)closePage { [self stopObserving]; [self dismissViewControllerAnimated:YES completion:nil]; }
 - (void)startObserving {
@@ -421,14 +424,12 @@ static NSString *FDMRowDetail(NSDictionary *row) {
     for (NSDictionary *row in _active) { canPause |= [self canPause:row]; canResume |= [self canResume:row]; }
     _allButton.title = canPause ? @"全部暂停" : @"全部继续";
     _allButton.enabled = !restoring && (canPause || canResume);
-    if (restoring) {
-        _restoringLabel.text = @"正在恢复系统下载任务，请稍后操作";
-        _restoringLabel.frame = CGRectMake(0, 0, self.tableView.bounds.size.width, 60);
-        if (self.tableView.tableHeaderView != _restoringLabel) self.tableView.tableHeaderView = _restoringLabel;
-    } else if (self.tableView.tableHeaderView) self.tableView.tableHeaderView = nil;
+    _restoringLabel.text = restoring ? @"正在恢复系统下载任务，请稍后操作" : nil;
+    _restoringLabel.hidden = !restoring;
+    [self layoutHeaderView];
 }
 
-// Scope index 0 is 全部 and -1 means no scope selected; both accept every row.
+// -1 means no filter; 0 (全部) folds into -1 so both accept every row.
 - (BOOL)rowMatchesFilter:(NSDictionary *)row {
     if (_filter > 0) {
         NSInteger state = [row[@"state"] integerValue];
@@ -449,14 +450,136 @@ static NSString *FDMRowDetail(NSDictionary *row) {
            [source rangeOfString:_query options:NSCaseInsensitiveSearch].location != NSNotFound;
 }
 
-- (void)updateSearchResultsForSearchController:(UISearchController *)controller {
-    _query = [controller.searchBar.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+- (void)buildHeaderView {
+    if (_headerView) return;
+    _headerView = [[UIView alloc] init];
+    _headerView.backgroundColor = UIColor.clearColor;
+
+    UIView *iconBox = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 34, 36)];
+    UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"magnifyingglass"]];
+    icon.frame = CGRectMake(12, 9, 18, 18);
+    icon.contentMode = UIViewContentModeScaleAspectFit;
+    icon.tintColor = UIColor.secondaryLabelColor;
+    [iconBox addSubview:icon];
+
+    _searchField = [[UITextField alloc] init];
+    _searchField.placeholder = @"搜索下载名称或地址";
+    _searchField.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    _searchField.adjustsFontForContentSizeCategory = YES;
+    _searchField.textColor = UIColor.labelColor;
+    _searchField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    _searchField.returnKeyType = UIReturnKeySearch;
+    _searchField.autocorrectionType = UITextAutocorrectionTypeNo;
+    _searchField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    _searchField.leftView = iconBox;
+    _searchField.leftViewMode = UITextFieldViewModeAlways;
+    _searchField.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+    _searchField.layer.cornerRadius = 10;
+    _searchField.layer.cornerCurve = kCACornerCurveContinuous;
+    _searchField.accessibilityIdentifier = @"FDMDownloadSearchField";
+    _searchField.accessibilityLabel = @"搜索下载";
+    _searchField.delegate = self;
+    [_searchField addTarget:self action:@selector(searchFieldChanged) forControlEvents:UIControlEventEditingChanged];
+    [_headerView addSubview:_searchField];
+
+    _filterButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    _filterButton.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    _filterButton.titleLabel.adjustsFontForContentSizeCategory = YES;
+    _filterButton.showsMenuAsPrimaryAction = YES;
+    _filterButton.accessibilityIdentifier = @"FDMDownloadFilterButton";
+    [_headerView addSubview:_filterButton];
+
+    _restoringLabel.frame = CGRectZero;
+    [_headerView addSubview:_restoringLabel];
+}
+
+- (void)layoutHeaderView {
+    if (!_headerView) return;
+    CGFloat width = self.tableView.bounds.size.width;
+    if (width <= 0) return;
+    CGFloat inset = 16, gap = 8, rowHeight = 36, padding = 8;
+    UIFont *font = _filterButton.titleLabel.font ?: [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    CGSize titleSize = [(_filterButton.currentTitle ?: @"筛选") sizeWithAttributes:@{NSFontAttributeName: font}];
+    CGFloat buttonWidth = MAX(56, ceil(titleSize.width) + 24);
+    CGFloat rowWidth = width - inset * 2;
+    CGFloat fieldWidth = MAX(80, rowWidth - buttonWidth - gap);
+    _searchField.frame = CGRectMake(inset, padding, fieldWidth, rowHeight);
+    _filterButton.frame = CGRectMake(inset + rowWidth - buttonWidth, padding, buttonWidth, rowHeight);
+    CGFloat height = padding + rowHeight + padding;
+    if (!_restoringLabel.hidden) {
+        _restoringLabel.frame = CGRectMake(inset, height, rowWidth, 60);
+        height += 60;
+    }
+    _headerView.frame = CGRectMake(0, 0, width, height);
+    if (!CGSizeEqualToSize(_headerSize, _headerView.frame.size)) {
+        _headerSize = _headerView.frame.size;
+        self.tableView.tableHeaderView = _headerView;
+    }
+}
+
+- (NSString *)activeFilterTitle {
+    switch (_filter) {
+        case 1: return @"进行中";
+        case 2: return @"等待";
+        case 3: return @"已暂停";
+        case 4: return @"已完成";
+        case 5: return @"失败";
+        default: return nil;
+    }
+}
+
+- (UIMenu *)filterMenu {
+    NSArray<NSString *> *titles = @[@"全部", @"进行中", @"等待", @"已暂停", @"已完成", @"失败"];
+    NSArray<NSNumber *> *values = @[@(-1), @1, @2, @3, @4, @5];
+    NSInteger current = _filter;
+    __weak typeof(self) weakSelf = self;
+    NSMutableArray<UIAction *> *actions = [NSMutableArray array];
+    for (NSUInteger index = 0; index < titles.count; index++) {
+        NSInteger value = values[index].integerValue;
+        UIAction *action = [UIAction actionWithTitle:titles[index] image:nil identifier:nil handler:^(UIAction *selected) {
+            [weakSelf applyFilter:value];
+        }];
+        action.state = value == current ? UIMenuElementStateOn : UIMenuElementStateOff;
+        [actions addObject:action];
+    }
+    return [UIMenu menuWithTitle:@"" children:actions];
+}
+
+- (void)updateFilterButton {
+    if (!_filterButton) return;
+    NSString *active = [self activeFilterTitle];
+    [_filterButton setTitle:(active ? [NSString stringWithFormat:@"筛选 · %@", active] : @"筛选") forState:UIControlStateNormal];
+    _filterButton.tintColor = active ? self.view.tintColor : UIColor.secondaryLabelColor;
+    _filterButton.accessibilityLabel = active ? [NSString stringWithFormat:@"筛选，当前 %@", active] : @"筛选";
+    _filterButton.menu = [self filterMenu];
+    [self layoutHeaderView];
+}
+
+- (void)applyFilter:(NSInteger)filter {
+    if (_filter == filter) return;
+    _filter = filter;
+    [self updateFilterButton];
     [self refresh];
 }
 
-- (void)searchBar:(UISearchBar *)searchBar selectedScopeButtonIndexDidChange:(NSInteger)selectedScope {
-    _filter = selectedScope;
+- (void)searchFieldChanged {
+    NSString *text = [_searchField.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if ([text isEqualToString:_query]) return;
+    _query = text;
     [self refresh];
+}
+
+- (BOOL)textFieldShouldReturn:(UITextField *)textField {
+    [textField resignFirstResponder];
+    return YES;
+}
+
+- (BOOL)textFieldShouldClear:(UITextField *)textField {
+    if (_query.length) {
+        _query = @"";
+        [self refresh];
+    }
+    return YES;
 }
 
 - (BOOL)canPause:(NSDictionary *)row { return [row[@"state"] integerValue] == FDMStateDownloading && ![row[@"pausing"] boolValue] && [row[@"live"] boolValue]; }
