@@ -53,12 +53,11 @@ class TranslateProxyContracts(unittest.TestCase):
 
     def test_panda_webview_selection_translation_restoration(self):
         self.assertIn("fdm_PandaWebView_canPerformAction", self.source)
+        self.assertIn("fdm_PandaWebView_safeTranslate", self.source)
         self.assertIn("_systemTranslate:", self.source)
         self.assertIn("translate:", self.source)
-        self.assertIn("_lookup:", self.source)
-        self.assertIn("_define:", self.source)
-        self.assertIn("WKContentView", self.source)
-        self.assertIn("class_addMethod", self.source)
+        self.assertIn("translateForWebView:", self.source)
+        self.assertIn("class_replaceMethod", self.source)
 
     def test_focusdm_wiring(self):
         self.assertIn('#import "FDMTranslateProxy.h"', self.focusdm)

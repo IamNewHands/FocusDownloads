@@ -253,54 +253,66 @@ static void fdm_TranslateHelper_handleHttpRequest(id self, SEL _cmd, NSDictionar
 
 #pragma mark - PandaWebView Context Menu & System Translation
 
+static void fdm_PandaWebView_safeTranslate(id self, SEL _cmd, id sender) {
+    (void)_cmd;
+    @try {
+        // 1. Forward to super (WKWebView's native translate: method)
+        struct objc_super sup = {
+            .receiver = self,
+            .super_class = class_getSuperclass([self class])
+        };
+        SEL transSel = @selector(translate:);
+        if ([WKWebView instancesRespondToSelector:transSel]) {
+            ((void (*)(struct objc_super *, SEL, id))objc_msgSendSuper)(&sup, transSel, sender);
+            return;
+        }
+    } @catch (NSException *e) {
+        FDMLog(@"translate proxy: caught exception in [super translate:]: %@", e);
+    }
+    
+    // 2. Direct fallback to contentView translateForWebView:
+    @try {
+        UIView *contentView = nil;
+        UIScrollView *sv = [self valueForKey:@"scrollView"];
+        if ([sv isKindOfClass:UIScrollView.class]) {
+            for (UIView *sub in sv.subviews) {
+                if ([NSStringFromClass(sub.class) containsString:@"WKContentView"]) {
+                    contentView = sub;
+                    break;
+                }
+            }
+        }
+        SEL transForWeb = NSSelectorFromString(@"translateForWebView:");
+        if (contentView && [contentView respondsToSelector:transForWeb]) {
+            ((void (*)(id, SEL, id))objc_msgSend)(contentView, transForWeb, sender);
+            return;
+        }
+    } @catch (NSException *e) {
+        FDMLog(@"translate proxy: caught exception in translateForWebView: %@", e);
+    }
+}
+
 static BOOL fdm_PandaWebView_canPerformAction(id self, SEL _cmd, SEL action, id sender) {
     NSString *selName = NSStringFromSelector(action);
-    // Allow iOS system text selection translation & lookups
-    if ([selName isEqualToString:@"_systemTranslate:"] ||
+    if ([selName isEqualToString:@"translate:"] ||
         [selName isEqualToString:@"_translate:"] ||
-        [selName isEqualToString:@"translate:"] ||
-        [selName containsString:@"Translate"] ||
-        [selName isEqualToString:@"_define:"] ||
-        [selName isEqualToString:@"_lookup:"] ||
-        [selName isEqualToString:@"_share:"]) {
+        [selName isEqualToString:@"_systemTranslate:"] ||
+        [selName isEqualToString:@"findInPageItem"]) {
         return YES;
     }
     
-    if (orig_PandaWebView_canPerformAction) {
-        return orig_PandaWebView_canPerformAction(self, _cmd, action, sender);
+    if (orig_PandaWebView_canPerformAction && orig_PandaWebView_canPerformAction(self, _cmd, action, sender)) {
+        return YES;
+    }
+    
+    struct objc_super sup = {
+        .receiver = self,
+        .super_class = class_getSuperclass([self class])
+    };
+    if ([WKWebView instancesRespondToSelector:@selector(canPerformAction:withSender:)]) {
+        return ((BOOL (*)(struct objc_super *, SEL, SEL, id))objc_msgSendSuper)(&sup, @selector(canPerformAction:withSender:), action, sender);
     }
     return NO;
-}
-
-static void fdm_PandaWebView_systemTranslate(id self, SEL _cmd, id sender) {
-    // Forward the translation invocation to WKContentView inside the web view
-    UIView *contentView = nil;
-    UIScrollView *sv = [self valueForKey:@"scrollView"];
-    if ([sv isKindOfClass:UIScrollView.class]) {
-        for (UIView *sub in sv.subviews) {
-            if ([NSStringFromClass(sub.class) containsString:@"WKContentView"]) {
-                contentView = sub;
-                break;
-            }
-        }
-    }
-    
-    if (contentView && [contentView respondsToSelector:_cmd]) {
-        ((void (*)(id, SEL, id))objc_msgSend)(contentView, _cmd, sender);
-        return;
-    }
-    
-    SEL sysTrans = NSSelectorFromString(@"_systemTranslate:");
-    if (contentView && [contentView respondsToSelector:sysTrans]) {
-        ((void (*)(id, SEL, id))objc_msgSend)(contentView, sysTrans, sender);
-        return;
-    }
-    
-    SEL lookup = NSSelectorFromString(@"_lookup:");
-    if (contentView && [contentView respondsToSelector:lookup]) {
-        ((void (*)(id, SEL, id))objc_msgSend)(contentView, lookup, sender);
-        return;
-    }
 }
 
 #pragma mark - Hook Installation
@@ -331,12 +343,14 @@ static void fdm_PandaWebView_systemTranslate(id self, SEL _cmd, id sender) {
                 FDMLog(@"translate proxy: hooked PandaWebView canPerformAction:withSender:");
             }
             
-            // Add _systemTranslate: and translate: methods to PandaWebView
+            // Register safe translate handlers for translate:, _translate:, _systemTranslate:
+            SEL transSel = @selector(translate:);
+            SEL privTransSel = NSSelectorFromString(@"_translate:");
             SEL sysTransSel = NSSelectorFromString(@"_systemTranslate:");
-            SEL transSel = NSSelectorFromString(@"translate:");
-            class_addMethod(webViewClass, sysTransSel, (IMP)fdm_PandaWebView_systemTranslate, "v@:@");
-            class_addMethod(webViewClass, transSel, (IMP)fdm_PandaWebView_systemTranslate, "v@:@");
-            FDMLog(@"translate proxy: added system translation methods to PandaWebView");
+            class_replaceMethod(webViewClass, transSel, (IMP)fdm_PandaWebView_safeTranslate, "v@:@");
+            class_replaceMethod(webViewClass, privTransSel, (IMP)fdm_PandaWebView_safeTranslate, "v@:@");
+            class_replaceMethod(webViewClass, sysTransSel, (IMP)fdm_PandaWebView_safeTranslate, "v@:@");
+            FDMLog(@"translate proxy: registered safe translation handlers on PandaWebView");
         }
     });
 }

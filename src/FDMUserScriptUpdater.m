@@ -171,9 +171,9 @@ static void (*orig_UserScriptController_updateAllUserscripts)(id, SEL);
     if (detailLabel) {
         NSString *last = [self lastSuccessDateString];
         if (last) {
-            detailLabel.text = [NSString stringWithFormat:@"每天首次进入浏览器时自动更新已安装脚本（上次更新：%@）", last];
+            detailLabel.text = [NSString stringWithFormat:@"每天首次启动自动检查（上次：%@）", last];
         } else {
-            detailLabel.text = @"每天首次进入浏览器时自动更新已安装脚本";
+            detailLabel.text = @"每天首次进入浏览器时自动检查更新";
         }
     }
 }
@@ -192,23 +192,67 @@ static void (*orig_UserScriptController_updateAllUserscripts)(id, SEL);
         CGFloat width = tableView.bounds.size.width;
         if (width <= 0) width = UIScreen.mainScreen.bounds.size.width;
         
-        UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 74)];
+        const CGFloat cardHeight = 76.0;
+        const CGFloat containerHeight = 88.0;
+        
+        UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, containerHeight)];
         container.tag = FDMUserScriptHeaderTag;
         container.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         container.backgroundColor = [UIColor clearColor];
         
-        UIView *card = [[UIView alloc] initWithFrame:CGRectMake(16, 6, width - 32, 62)];
+        UIView *card = [[UIView alloc] initWithFrame:CGRectMake(16, 6, width - 32, cardHeight)];
         card.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         card.backgroundColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *tc) {
             if (tc.userInterfaceStyle == UIUserInterfaceStyleDark) {
-                return [UIColor colorWithRed:0.14 green:0.14 blue:0.15 alpha:1.0];
+                return [UIColor colorWithRed:0.11 green:0.11 blue:0.12 alpha:1.0]; // #1C1C1E
             }
-            return [UIColor colorWithRed:0.95 green:0.95 blue:0.97 alpha:1.0];
+            return [UIColor whiteColor];
         }];
         card.layer.cornerRadius = 12;
         card.layer.masksToBounds = YES;
         
-        UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(14, 11, width - 32 - 80, 20)];
+        // 1. Left Icon: 36x36 rounded square with sync/update symbol matching lower cards
+        UIView *iconView = [[UIView alloc] initWithFrame:CGRectMake(14, (cardHeight - 36) / 2.0, 36, 36)];
+        iconView.layer.cornerRadius = 8;
+        iconView.layer.masksToBounds = YES;
+        iconView.backgroundColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *tc) {
+            if (tc.userInterfaceStyle == UIUserInterfaceStyleDark) {
+                return [UIColor colorWithRed:0.18 green:0.30 blue:0.22 alpha:1.0];
+            }
+            return [UIColor colorWithRed:0.90 green:0.96 blue:0.92 alpha:1.0];
+        }];
+        
+        UIImageView *iconImg = [[UIImageView alloc] initWithFrame:CGRectMake(7, 7, 22, 22)];
+        iconImg.contentMode = UIViewContentModeScaleAspectFit;
+        iconImg.tintColor = [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1.0]; // System green
+        if (@available(iOS 13.0, *)) {
+            UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold];
+            iconImg.image = [UIImage systemImageNamed:@"arrow.triangle.2.circlepath" withConfiguration:cfg];
+        }
+        [iconView addSubview:iconImg];
+        [card addSubview:iconView];
+        
+        // 2. Switch on Right with matching green onTintColor
+        UISwitch *sw = [[UISwitch alloc] init];
+        sw.tag = FDMUserScriptSwitchTag;
+        sw.on = [self isAutoUpdateEnabled];
+        sw.onTintColor = [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1.0];
+        CGFloat swWidth = sw.bounds.size.width;
+        CGFloat swHeight = sw.bounds.size.height;
+        CGFloat swX = (width - 32) - swWidth - 14;
+        CGFloat swY = (cardHeight - swHeight) / 2.0;
+        sw.frame = CGRectMake(swX, swY, swWidth, swHeight);
+        sw.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
+        [sw addTarget:self action:@selector(handleSwitchToggled:) forControlEvents:UIControlEventValueChanged];
+        [card addSubview:sw];
+        
+        // 3. Middle Text Content: strictly bounded between icon and switch (never overlaps!)
+        CGFloat textLeft = 14 + 36 + 12; // 62
+        CGFloat textRightReserve = 14 + swWidth + 12; // Reserves space for switch + padding
+        CGFloat textWidth = (width - 32) - textLeft - textRightReserve;
+        if (textWidth < 120) textWidth = 120;
+        
+        UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(textLeft, 16, textWidth, 20)];
         titleLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         titleLabel.text = @"脚本每日自动更新";
         titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
@@ -217,24 +261,16 @@ static void (*orig_UserScriptController_updateAllUserscripts)(id, SEL);
         }];
         [card addSubview:titleLabel];
         
-        UILabel *detailLabel = [[UILabel alloc] initWithFrame:CGRectMake(14, 33, width - 32 - 80, 18)];
+        UILabel *detailLabel = [[UILabel alloc] initWithFrame:CGRectMake(textLeft, 40, textWidth, 18)];
         detailLabel.tag = FDMUserScriptDetailTag;
         detailLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         detailLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
         detailLabel.textColor = UIColor.secondaryLabelColor;
+        detailLabel.adjustsFontSizeToFitWidth = YES;
+        detailLabel.minimumScaleFactor = 0.85;
         NSString *last = [self lastSuccessDateString];
-        detailLabel.text = last ? [NSString stringWithFormat:@"每天首次进入浏览器时自动更新已安装脚本（上次更新：%@）", last] : @"每天首次进入浏览器时自动更新已安装脚本";
+        detailLabel.text = last ? [NSString stringWithFormat:@"每天首次启动自动检查（上次：%@）", last] : @"每天首次进入浏览器时自动检查更新";
         [card addSubview:detailLabel];
-        
-        UISwitch *sw = [[UISwitch alloc] init];
-        sw.tag = FDMUserScriptSwitchTag;
-        sw.on = [self isAutoUpdateEnabled];
-        CGFloat swX = (width - 32) - sw.bounds.size.width - 14;
-        CGFloat swY = (62 - sw.bounds.size.height) / 2.0;
-        sw.frame = CGRectMake(swX, swY, sw.bounds.size.width, sw.bounds.size.height);
-        sw.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-        [sw addTarget:self action:@selector(handleSwitchToggled:) forControlEvents:UIControlEventValueChanged];
-        [card addSubview:sw];
         
         [container addSubview:card];
         tableView.tableHeaderView = container;

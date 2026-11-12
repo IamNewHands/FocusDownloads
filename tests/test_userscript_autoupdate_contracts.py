@@ -81,6 +81,10 @@ class UserScriptAutoUpdateContracts(unittest.TestCase):
         self.assertIn("FDMUserScriptHeaderTag", self.source)
         self.assertIn("FDMUserScriptSwitchTag", self.source)
         self.assertIn("FDMUserScriptDetailTag", self.source)
+        # Visual style coordination: white card, green switch, left icon
+        self.assertIn("sw.onTintColor", self.source)
+        self.assertIn("arrow.triangle.2.circlepath", self.source)
+        self.assertIn("whiteColor", self.source)
         # Swizzles viewWillAppear: and _updateAllUserscripts
         self.assertIn("viewWillAppear:", self.source)
         self.assertIn('_updateAllUserscripts', self.source)
