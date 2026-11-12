@@ -102,6 +102,70 @@ static BOOL FDMSetSettingsValue(id row, NSString *key, id value) {
 // Focus 2.9.7 renders type 0 as SettingVipCell and type 17 as RecommendCell.
 // A task-owned type takes its ordinary SettingCell branch without inheriting VIP behavior.
 static const int FDMSettingsRowType = 0x46444d;
+
+static BOOL FDMShouldHideSettingsRow(id row, NSString *headerTitle) {
+    if (!row) return NO;
+    
+    // Type 17 is Focus RecommendCell ("其它作品")
+    NSInteger type = [FDMValue(row, @"type") integerValue];
+    if (type == 17) return YES;
+    
+    NSString *title = FDMString(FDMValue(row, @"title"));
+    NSString *imageName = FDMString(FDMValue(row, @"imageName"));
+    NSString *link = FDMString(FDMValue(row, @"link"));
+    
+    // Focus native icon names
+    if ([imageName isEqual:@"setting_lock"]) return YES;      // 隐私协议
+    if ([imageName isEqual:@"setting_info"]) return YES;      // 关于我们
+    if ([imageName isEqual:@"setting_question"]) return YES;  // 使用帮助
+    if ([imageName isEqual:@"setting_star"]) return YES;      // 评价应用
+    if ([imageName isEqual:@"setting_share"]) return YES;     // 分享给朋友
+    if ([imageName isEqual:@"addons_logo"]) return YES;       // Addons
+    if ([imageName isEqual:@"qingyue_logo"]) return YES;      // 轻阅
+    
+    // Specific links
+    if ([link containsString:@"privacy.policy"] || [link containsString:@"write-review"] ||
+        [link containsString:@"6446811843"] || [link containsString:@"6468076268"]) {
+        return YES;
+    }
+    
+    // Localized bundle keys
+    static NSArray<NSString *> *blockedKeys = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        blockedKeys = @[
+            @"setting.privacyProtocol",
+            @"setting.aboutUs",
+            @"setting.guideline",
+            @"setting.rate",
+            @"setting.shareToFirend",
+            @"setting.qingyue.title",
+            @"setting.addons.detail"
+        ];
+    });
+    for (NSString *key in blockedKeys) {
+        NSString *loc = [NSBundle.mainBundle localizedStringForKey:key value:nil table:nil];
+        if (loc.length > 0 && [title isEqualToString:loc]) return YES;
+    }
+    
+    // Common text fallbacks (zh-Hans, zh-Hant, en)
+    if ([title isEqualToString:@"隐私协议"] || [title isEqualToString:@"隱私協議"] || [title isEqualToString:@"Privacy Policy"]) return YES;
+    if ([title isEqualToString:@"关于我们"] || [title isEqualToString:@"關於我們"] || [title isEqualToString:@"About Us"]) return YES;
+    if ([title isEqualToString:@"使用帮助"] || [title isEqualToString:@"使用說明"] || [title isEqualToString:@"User Guide"]) return YES;
+    if ([title isEqualToString:@"评价应用"] || [title isEqualToString:@"評價應用程式"] || [title isEqualToString:@"Rate Focus"]) return YES;
+    if ([title isEqualToString:@"分享给朋友"] || [title isEqualToString:@"分享給朋友"] || [title isEqualToString:@"Share with Friends"]) return YES;
+    if ([title isEqualToString:@"Addons"] || [title isEqualToString:@"轻阅"] || [title isEqualToString:@"Qingyue"] || [title isEqualToString:@"輕閱"]) return YES;
+    
+    // Entire section matching for "其它作品" / "其他作品" / "Other Apps"
+    if (headerTitle.length > 0) {
+        if ([headerTitle containsString:@"作品"] || [headerTitle containsString:@"Other Apps"] || [headerTitle containsString:@"More Apps"]) {
+            return YES;
+        }
+    }
+    
+    return NO;
+}
+
 static void FDMEnsureSettingsRows(UIViewController *controller) {
     @try {
         id model = FDMValue(controller, @"model");
@@ -140,14 +204,20 @@ static void FDMEnsureSettingsRows(UIViewController *controller) {
         BOOL changed = NO;
         NSMutableArray *updated = [NSMutableArray arrayWithCapacity:sections.count];
         NSMutableDictionary *existing = [NSMutableDictionary dictionary];
-        for (id section in sections) {
+        for (NSUInteger index = 0; index < sections.count; index++) {
+            id section = sections[index];
             if (![section isKindOfClass:NSArray.class]) { [updated addObject:section]; continue; }
+            NSString *headerTitle = ([headers isKindOfClass:NSArray.class] && index < [headers count]) ? FDMHeaderTitle(headers[index]) : @"";
             NSMutableArray *rows = [NSMutableArray array];
             for (id row in section) {
                 NSString *link = FDMString(FDMValue(row, @"link"));
                 if (FDMIsSettingsLink(link)) {
                     if (!existing[link]) existing[link] = row;
-                } else [rows addObject:row];
+                } else if (FDMShouldHideSettingsRow(row, headerTitle)) {
+                    changed = YES;
+                } else {
+                    [rows addObject:row];
+                }
             }
             [updated addObject:rows];
         }
@@ -164,18 +234,37 @@ static void FDMEnsureSettingsRows(UIViewController *controller) {
             }
             [rows addObject:row];
         }
-        for (NSUInteger index = 0; index < sections.count; index++) {
-            id original = sections[index], replacement = updated[index];
-            if (![replacement isKindOfClass:NSArray.class]) continue;
-            BOOL different = ![original isEqual:replacement];
-            if (different || index == (NSUInteger)selected) {
-                for (NSUInteger rowIndex = 0; rowIndex < [replacement count]; rowIndex++) {
-                    changed |= FDMSetSettingsValue(replacement[rowIndex], @"isFirstInSection", @(rowIndex == 0));
-                    changed |= FDMSetSettingsValue(replacement[rowIndex], @"isLastInSection", @(rowIndex + 1 == [replacement count]));
+        
+        // Strip empty sections and keep sectionHeaderModel in sync
+        NSMutableArray *finalSections = [NSMutableArray array];
+        NSMutableArray *finalHeaders = [NSMutableArray array];
+        for (NSUInteger index = 0; index < [updated count]; index++) {
+            id sRows = updated[index];
+            if ([sRows isKindOfClass:NSArray.class] && [sRows count] == 0) {
+                changed = YES;
+                continue;
+            }
+            if ([sRows isKindOfClass:NSArray.class]) {
+                for (NSUInteger rowIndex = 0; rowIndex < [sRows count]; rowIndex++) {
+                    changed |= FDMSetSettingsValue(sRows[rowIndex], @"isFirstInSection", @(rowIndex == 0));
+                    changed |= FDMSetSettingsValue(sRows[rowIndex], @"isLastInSection", @(rowIndex + 1 == [sRows count]));
                 }
             }
-            if (different) { sections[index] = replacement; changed = YES; }
+            [finalSections addObject:sRows];
+            if ([headers isKindOfClass:NSArray.class] && index < [headers count]) {
+                [finalHeaders addObject:headers[index]];
+            }
         }
+        
+        if (![sections isEqualToArray:finalSections]) {
+            [sections setArray:finalSections];
+            changed = YES;
+        }
+        if ([headers isKindOfClass:NSMutableArray.class] && ![headers isEqualToArray:finalHeaders]) {
+            [headers setArray:finalHeaders];
+            changed = YES;
+        }
+        
         UITableView *table = FDMValue(controller, @"tableView");
         if (changed && [table isKindOfClass:UITableView.class]) [table reloadData];
     } @catch (NSException *exception) { FDMLog(@"settings rows failed %@", exception.reason); }

@@ -57,6 +57,24 @@ class SettingsUIContracts(unittest.TestCase):
         self.assertIn("forMode:NSDefaultRunLoopMode", self.downloads)
         self.assertIn("scrollViewDidEndDecelerating:", self.downloads)
 
+    def test_unwanted_settings_menus_hidden_and_deleted(self):
+        # Must define filter function
+        self.assertIn("FDMShouldHideSettingsRow", self.host)
+        # Must filter type 17 (RecommendCell)
+        self.assertIn("type == 17", self.host)
+        # Must filter by specific icon assets
+        for icon in ("setting_lock", "setting_info", "setting_question", "setting_star", "setting_share", "addons_logo", "qingyue_logo"):
+            self.assertIn(icon, self.host)
+        # Must filter by bundle localization keys
+        for key in ("setting.privacyProtocol", "setting.aboutUs", "setting.guideline", "setting.rate", "setting.shareToFirend", "setting.qingyue.title", "setting.addons.detail"):
+            self.assertIn(key, self.host)
+        # Must filter by title strings
+        for title in ("隐私协议", "关于我们", "使用帮助", "评价应用", "分享给朋友", "Addons", "轻阅"):
+            self.assertIn(title, self.host)
+        # Must strip empty sections and synchronize sectionHeaderModel
+        self.assertIn("finalSections", self.host)
+        self.assertIn("finalHeaders", self.host)
+
     def test_native_settings_and_download_fixtures_are_executed(self):
         app = (ROOT / "tests/icons_app_main.m").read_text(encoding="utf-8")
         runner = (ROOT / "tests/run_icons_simulator.py").read_text(encoding="utf-8")

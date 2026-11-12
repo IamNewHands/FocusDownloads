@@ -81,7 +81,8 @@ static void FDMAssertSettingsEntries(SettingViewController *settings) {
         NSCAssert([row.imageName isEqual:@"fixture-icon"] && [row.imageBackgroundColor isEqual:@"#66BB66"], @"ordinary row with no link supplies native icon styling");
         NSCAssert(!row.content.length, @"no stale native setting value is copied");
     }
-    NSCAssert([settings.model[0] count] == 1 && [settings.model[2] count] == 1, @"native VIP and recommendation rows remain untouched");
+    NSCAssert([settings.model[0] count] == 1, @"native VIP row remains untouched");
+    NSCAssert([settings.model count] == 2, @"recommendation section was stripped");
 }
 
 void FDMRunSettingsRegressionTests(void) {
@@ -99,9 +100,16 @@ void FDMRunSettingsRegressionTests(void) {
 
     SettingModel *broken = settings.model[1][1];
     broken.type = 0; broken.title = @"Pro"; broken.content = @"stale";
-    NSMutableArray *duplicates = [settings.model[2] mutableCopy];
-    [duplicates addObject:FDMSettingsFixtureRow(@"Pro", 0, @"focusdm://downloads")];
-    settings.model[2] = duplicates;
+    SettingModel *privacy = FDMSettingsFixtureRow(@"隐私协议", 1, nil);
+    privacy.imageName = @"setting_lock";
+    SettingModel *aboutUs = FDMSettingsFixtureRow(@"关于我们", 1, nil);
+    aboutUs.imageName = @"setting_info";
+    SettingModel *help = FDMSettingsFixtureRow(@"使用帮助", 1, nil);
+    help.imageName = @"setting_question";
+    SettingModel *dup = FDMSettingsFixtureRow(@"Pro", 0, @"focusdm://downloads");
+    NSMutableArray *unwanted = [NSMutableArray arrayWithObjects:privacy, aboutUs, help, dup, nil];
+    [settings.model addObject:unwanted];
+    [settings.sectionHeaderModel addObject:@"关于"];
     [settings viewWillAppear:NO];
     FDMAssertSettingsEntries(settings);
     NSCAssert(settings.tableView.reloadCount == count + 1, @"all repairs and duplicate removal use one reload");
