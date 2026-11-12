@@ -14,6 +14,7 @@
 #import "FDMPageImages.h"
 #import "FDMPageNavigation.h"
 #import "FDMAdBlockUpdater.h"
+#import "FDMUserScriptUpdater.h"
 
 static NSString *const FDMDownloadsLink = @"focusdm://downloads";
 static NSString *const FDMSitePoliciesLink = @"focusdm://site-policies";
@@ -324,6 +325,9 @@ static BOOL FDMDidFinishLaunch(id self, SEL selector, UIApplication *application
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [FDMAdBlockUpdater checkAndTriggerDailyUpdateIfNeeded];
     });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [FDMUserScriptUpdater checkAndTriggerDailyUpdateIfNeeded];
+    });
     return result;
 }
 
@@ -344,6 +348,7 @@ static void FDMDidEnterBackground(id self, SEL selector, UIApplication *applicat
 static void FDMDidBecomeActive(id self, SEL selector, UIApplication *application) {
     if (FDMOriginalDidBecomeActive) ((void (*)(id, SEL, id))FDMOriginalDidBecomeActive)(self, selector, application);
     [FDMAdBlockUpdater checkAndTriggerDailyUpdateIfNeeded];
+    [FDMUserScriptUpdater checkAndTriggerDailyUpdateIfNeeded];
 }
 
 static void FDMInstallHostHooks(void) {
@@ -361,6 +366,7 @@ static void FDMInstallHostHooks(void) {
     FDMInstallNavigationCreatedCallback(^{ FDMShowDownloadPill(); });
     FDMInstallNavigationHooks();
     [FDMAdBlockUpdater installHooks];
+    [FDMUserScriptUpdater installHooks];
 }
 
 #if defined(FDM_TESTING)
