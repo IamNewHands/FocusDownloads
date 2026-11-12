@@ -78,6 +78,7 @@ class UserScriptAutoUpdateContracts(unittest.TestCase):
     def test_ui_header_injection_and_hooks(self):
         # Table header view injection
         self.assertIn("tableView.tableHeaderView", self.source)
+        self.assertIn("FDMUserScriptHeaderView", self.source)
         self.assertIn("FDMUserScriptHeaderTag", self.source)
         self.assertIn("FDMUserScriptSwitchTag", self.source)
         self.assertIn("FDMUserScriptDetailTag", self.source)
@@ -85,8 +86,11 @@ class UserScriptAutoUpdateContracts(unittest.TestCase):
         self.assertIn("sw.onTintColor", self.source)
         self.assertIn("arrow.triangle.2.circlepath", self.source)
         self.assertIn("whiteColor", self.source)
-        # Swizzles viewWillAppear: and _updateAllUserscripts
+        # Switch alignment with lower cells
+        self.assertIn("switchView", self.source)
+        # Swizzles viewWillAppear:, reloadData and _updateAllUserscripts
         self.assertIn("viewWillAppear:", self.source)
+        self.assertIn("reloadData", self.source)
         self.assertIn('_updateAllUserscripts', self.source)
 
     def test_host_integration_in_focusdm(self):

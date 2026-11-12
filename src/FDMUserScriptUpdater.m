@@ -19,6 +19,7 @@ static BOOL _fdmUserScriptUpdating = NO;
 // Original swizzled function pointers
 static void (*orig_UserScriptController_viewWillAppear)(id, SEL, BOOL);
 static void (*orig_UserScriptController_updateAllUserscripts)(id, SEL);
+static void (*orig_UserScriptController_reloadData)(id, SEL);
 
 @implementation FDMUserScriptUpdater
 
@@ -159,6 +160,147 @@ static void (*orig_UserScriptController_updateAllUserscripts)(id, SEL);
     }
 }
 
+#pragma mark - Custom Header View
+
+@interface FDMUserScriptHeaderView : UIView
+@property (nonatomic, strong) UIView *card;
+@property (nonatomic, strong) UIView *iconView;
+@property (nonatomic, strong) UIImageView *iconImg;
+@property (nonatomic, strong) UILabel *titleLabel;
+@property (nonatomic, strong) UILabel *detailLabel;
+@property (nonatomic, strong) UISwitch *sw;
+@end
+
+@implementation FDMUserScriptHeaderView
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.tag = FDMUserScriptHeaderTag;
+        self.backgroundColor = [UIColor clearColor];
+        
+        _card = [[UIView alloc] initWithFrame:CGRectZero];
+        _card.backgroundColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *tc) {
+            if (tc.userInterfaceStyle == UIUserInterfaceStyleDark) {
+                return [UIColor colorWithRed:0.11 green:0.11 blue:0.12 alpha:1.0];
+            }
+            return [UIColor whiteColor];
+        }];
+        _card.layer.cornerRadius = 12.0;
+        _card.layer.masksToBounds = YES;
+        [self addSubview:_card];
+        
+        _iconView = [[UIView alloc] initWithFrame:CGRectZero];
+        _iconView.layer.cornerRadius = 8.0;
+        _iconView.layer.masksToBounds = YES;
+        _iconView.backgroundColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *tc) {
+            if (tc.userInterfaceStyle == UIUserInterfaceStyleDark) {
+                return [UIColor colorWithRed:0.18 green:0.30 blue:0.22 alpha:1.0];
+            }
+            return [UIColor colorWithRed:0.90 green:0.96 blue:0.92 alpha:1.0];
+        }];
+        [_card addSubview:_iconView];
+        
+        _iconImg = [[UIImageView alloc] initWithFrame:CGRectZero];
+        _iconImg.contentMode = UIViewContentModeScaleAspectFit;
+        _iconImg.tintColor = [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1.0];
+        if (@available(iOS 13.0, *)) {
+            UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold];
+            _iconImg.image = [UIImage systemImageNamed:@"arrow.triangle.2.circlepath" withConfiguration:cfg];
+        }
+        [_iconView addSubview:_iconImg];
+        
+        _titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        _titleLabel.text = @"脚本每日自动更新";
+        _titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+        _titleLabel.textColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *tc) {
+            return (tc.userInterfaceStyle == UIUserInterfaceStyleDark) ? UIColor.whiteColor : UIColor.blackColor;
+        }];
+        [_card addSubview:_titleLabel];
+        
+        _detailLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        _detailLabel.tag = FDMUserScriptDetailTag;
+        _detailLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+        _detailLabel.textColor = UIColor.secondaryLabelColor;
+        _detailLabel.adjustsFontSizeToFitWidth = YES;
+        _detailLabel.minimumScaleFactor = 0.85;
+        [_card addSubview:_detailLabel];
+        
+        _sw = [[UISwitch alloc] init];
+        _sw.tag = FDMUserScriptSwitchTag;
+        _sw.onTintColor = [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1.0];
+        [_card addSubview:_sw];
+    }
+    return self;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGFloat width = self.bounds.size.width;
+    if (width <= 0) return;
+    
+    CGFloat cardMargin = 16.0;
+    CGFloat cardWidth = width - 32.0;
+    const CGFloat cardHeight = 76.0;
+    
+    // Look up lower cells to match horizontal alignment precisely
+    UIView *cellSwitch = nil;
+    UIView *cellLogo = nil;
+    if ([self.superview isKindOfClass:UITableView.class]) {
+        UITableView *tv = (UITableView *)self.superview;
+        for (UITableViewCell *c in tv.visibleCells) {
+            UIView *s = [c valueForKey:@"switchView"];
+            if ([s isKindOfClass:UIView.class] && s.bounds.size.width > 0) {
+                if (c.frame.size.width > 0) {
+                    cardMargin = c.frame.origin.x;
+                    cardWidth = c.frame.size.width;
+                }
+                cellSwitch = s;
+                cellLogo = [c valueForKey:@"logo"];
+                break;
+            }
+        }
+    }
+    
+    self.card.frame = CGRectMake(cardMargin, 6.0, cardWidth, cardHeight);
+    
+    // Icon alignment
+    CGFloat iconSize = 36.0;
+    CGFloat iconX = 14.0;
+    if (cellLogo && [cellLogo isKindOfClass:UIView.class]) {
+        CGPoint logoInCard = [cellLogo.superview convertPoint:cellLogo.frame.origin toView:self.card];
+        if (logoInCard.x > 0 && logoInCard.x < cardWidth / 2.0) {
+            iconX = logoInCard.x;
+            iconSize = cellLogo.frame.size.width > 0 ? cellLogo.frame.size.width : 36.0;
+        }
+    }
+    self.iconView.frame = CGRectMake(iconX, (cardHeight - iconSize) / 2.0, iconSize, iconSize);
+    self.iconImg.frame = CGRectMake((iconSize - 22.0) / 2.0, (iconSize - 22.0) / 2.0, 22.0, 22.0);
+    
+    // Switch alignment: perfectly align with cell switch!
+    CGSize swSize = self.sw.bounds.size;
+    if (swSize.width <= 0) swSize = CGSizeMake(51.0, 31.0);
+    CGFloat swX = cardWidth - swSize.width - 12.0;
+    if (cellSwitch) {
+        CGPoint swInCard = [cellSwitch.superview convertPoint:cellSwitch.frame.origin toView:self.card];
+        if (swInCard.x > iconX + iconSize + 20.0 && swInCard.x + swSize.width <= cardWidth + 5.0) {
+            swX = swInCard.x;
+        }
+    }
+    self.sw.frame = CGRectMake(swX, (cardHeight - swSize.height) / 2.0, swSize.width, swSize.height);
+    
+    // Middle text area
+    CGFloat textX = iconX + iconSize + 12.0;
+    CGFloat textRight = swX - 8.0;
+    CGFloat textWidth = textRight - textX;
+    if (textWidth < 100.0) textWidth = 100.0;
+    
+    self.titleLabel.frame = CGRectMake(textX, 16.0, textWidth, 20.0);
+    self.detailLabel.frame = CGRectMake(textX, 40.0, textWidth, 18.0);
+}
+
+@end
+
 #pragma mark - UI Integration
 
 + (void)updateHeaderView:(UIView *)headerView {
@@ -184,96 +326,21 @@ static void (*orig_UserScriptController_updateAllUserscripts)(id, SEL);
         if (![tableView isKindOfClass:UITableView.class]) return;
         
         UIView *header = tableView.tableHeaderView;
-        if (header && header.tag == FDMUserScriptHeaderTag) {
+        if ([header isKindOfClass:[FDMUserScriptHeaderView class]]) {
             [self updateHeaderView:header];
+            [header setNeedsLayout];
             return;
         }
         
         CGFloat width = tableView.bounds.size.width;
         if (width <= 0) width = UIScreen.mainScreen.bounds.size.width;
         
-        const CGFloat cardHeight = 76.0;
-        const CGFloat containerHeight = 88.0;
+        FDMUserScriptHeaderView *headerView = [[FDMUserScriptHeaderView alloc] initWithFrame:CGRectMake(0, 0, width, 88.0)];
+        headerView.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        [headerView.sw addTarget:self action:@selector(handleSwitchToggled:) forControlEvents:UIControlEventValueChanged];
+        [self updateHeaderView:headerView];
         
-        UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, containerHeight)];
-        container.tag = FDMUserScriptHeaderTag;
-        container.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-        container.backgroundColor = [UIColor clearColor];
-        
-        UIView *card = [[UIView alloc] initWithFrame:CGRectMake(16, 6, width - 32, cardHeight)];
-        card.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-        card.backgroundColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *tc) {
-            if (tc.userInterfaceStyle == UIUserInterfaceStyleDark) {
-                return [UIColor colorWithRed:0.11 green:0.11 blue:0.12 alpha:1.0]; // #1C1C1E
-            }
-            return [UIColor whiteColor];
-        }];
-        card.layer.cornerRadius = 12;
-        card.layer.masksToBounds = YES;
-        
-        // 1. Left Icon: 36x36 rounded square with sync/update symbol matching lower cards
-        UIView *iconView = [[UIView alloc] initWithFrame:CGRectMake(14, (cardHeight - 36) / 2.0, 36, 36)];
-        iconView.layer.cornerRadius = 8;
-        iconView.layer.masksToBounds = YES;
-        iconView.backgroundColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *tc) {
-            if (tc.userInterfaceStyle == UIUserInterfaceStyleDark) {
-                return [UIColor colorWithRed:0.18 green:0.30 blue:0.22 alpha:1.0];
-            }
-            return [UIColor colorWithRed:0.90 green:0.96 blue:0.92 alpha:1.0];
-        }];
-        
-        UIImageView *iconImg = [[UIImageView alloc] initWithFrame:CGRectMake(7, 7, 22, 22)];
-        iconImg.contentMode = UIViewContentModeScaleAspectFit;
-        iconImg.tintColor = [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1.0]; // System green
-        if (@available(iOS 13.0, *)) {
-            UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold];
-            iconImg.image = [UIImage systemImageNamed:@"arrow.triangle.2.circlepath" withConfiguration:cfg];
-        }
-        [iconView addSubview:iconImg];
-        [card addSubview:iconView];
-        
-        // 2. Switch on Right with matching green onTintColor
-        UISwitch *sw = [[UISwitch alloc] init];
-        sw.tag = FDMUserScriptSwitchTag;
-        sw.on = [self isAutoUpdateEnabled];
-        sw.onTintColor = [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1.0];
-        CGFloat swWidth = sw.bounds.size.width;
-        CGFloat swHeight = sw.bounds.size.height;
-        CGFloat swX = (width - 32) - swWidth - 14;
-        CGFloat swY = (cardHeight - swHeight) / 2.0;
-        sw.frame = CGRectMake(swX, swY, swWidth, swHeight);
-        sw.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
-        [sw addTarget:self action:@selector(handleSwitchToggled:) forControlEvents:UIControlEventValueChanged];
-        [card addSubview:sw];
-        
-        // 3. Middle Text Content: strictly bounded between icon and switch (never overlaps!)
-        CGFloat textLeft = 14 + 36 + 12; // 62
-        CGFloat textRightReserve = 14 + swWidth + 12; // Reserves space for switch + padding
-        CGFloat textWidth = (width - 32) - textLeft - textRightReserve;
-        if (textWidth < 120) textWidth = 120;
-        
-        UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(textLeft, 16, textWidth, 20)];
-        titleLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-        titleLabel.text = @"脚本每日自动更新";
-        titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
-        titleLabel.textColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *tc) {
-            return (tc.userInterfaceStyle == UIUserInterfaceStyleDark) ? UIColor.whiteColor : UIColor.blackColor;
-        }];
-        [card addSubview:titleLabel];
-        
-        UILabel *detailLabel = [[UILabel alloc] initWithFrame:CGRectMake(textLeft, 40, textWidth, 18)];
-        detailLabel.tag = FDMUserScriptDetailTag;
-        detailLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-        detailLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
-        detailLabel.textColor = UIColor.secondaryLabelColor;
-        detailLabel.adjustsFontSizeToFitWidth = YES;
-        detailLabel.minimumScaleFactor = 0.85;
-        NSString *last = [self lastSuccessDateString];
-        detailLabel.text = last ? [NSString stringWithFormat:@"每天首次启动自动检查（上次：%@）", last] : @"每天首次进入浏览器时自动检查更新";
-        [card addSubview:detailLabel];
-        
-        [container addSubview:card];
-        tableView.tableHeaderView = container;
+        tableView.tableHeaderView = headerView;
     } @catch (NSException *e) {
         FDMLog(@"userscript updater: exception ensuring header: %@", e);
     }
@@ -290,6 +357,22 @@ static void fdm_UserScriptController_viewWillAppear(id self, SEL _cmd, BOOL anim
         orig_UserScriptController_viewWillAppear(self, _cmd, animated);
     }
     [FDMUserScriptUpdater ensureHeaderInController:self];
+}
+
+static void fdm_UserScriptController_reloadData(id self, SEL _cmd) {
+    if (orig_UserScriptController_reloadData) {
+        orig_UserScriptController_reloadData(self, _cmd);
+    }
+    @try {
+        UITableView *tv = FDMValue(self, @"tableView");
+        if ([tv.tableHeaderView isKindOfClass:[FDMUserScriptHeaderView class]]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [tv.tableHeaderView setNeedsLayout];
+                [tv.tableHeaderView layoutIfNeeded];
+            });
+        }
+    } @catch (NSException *e) {
+    }
 }
 
 static void fdm_UserScriptController_updateAllUserscripts(id self, SEL _cmd) {
@@ -311,6 +394,15 @@ static void fdm_UserScriptController_updateAllUserscripts(id self, SEL _cmd) {
                 orig_UserScriptController_viewWillAppear = (void (*)(id, SEL, BOOL))method_getImplementation(appearMethod);
                 method_setImplementation(appearMethod, (IMP)fdm_UserScriptController_viewWillAppear);
                 FDMLog(@"userscript updater: hooked UserScriptController viewWillAppear:");
+            }
+            
+            // Swizzle reloadData
+            SEL reloadSel = NSSelectorFromString(@"reloadData");
+            Method reloadMethod = class_getInstanceMethod(ctrlClass, reloadSel);
+            if (reloadMethod) {
+                orig_UserScriptController_reloadData = (void (*)(id, SEL))method_getImplementation(reloadMethod);
+                method_setImplementation(reloadMethod, (IMP)fdm_UserScriptController_reloadData);
+                FDMLog(@"userscript updater: hooked UserScriptController reloadData");
             }
             
             // Swizzle _updateAllUserscripts
