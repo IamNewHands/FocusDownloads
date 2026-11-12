@@ -21,6 +21,160 @@ static void (*orig_UserScriptController_viewWillAppear)(id, SEL, BOOL);
 static void (*orig_UserScriptController_updateAllUserscripts)(id, SEL);
 static void (*orig_UserScriptController_reloadData)(id, SEL);
 
+#pragma mark - Custom Header View
+
+@interface FDMUserScriptHeaderView : UIView
+@property (nonatomic, strong) UIView *card;
+@property (nonatomic, strong) UIView *iconView;
+@property (nonatomic, strong) UIImageView *iconImg;
+@property (nonatomic, strong) UILabel *titleLabel;
+@property (nonatomic, strong) UILabel *detailLabel;
+@property (nonatomic, strong) UISwitch *sw;
+@end
+
+@implementation FDMUserScriptHeaderView
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.tag = FDMUserScriptHeaderTag;
+        self.backgroundColor = [UIColor clearColor];
+        
+        _card = [[UIView alloc] initWithFrame:CGRectZero];
+        _card.backgroundColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *tc) {
+            if (tc.userInterfaceStyle == UIUserInterfaceStyleDark) {
+                return [UIColor colorWithRed:0.11 green:0.11 blue:0.12 alpha:1.0];
+            }
+            return [UIColor whiteColor];
+        }];
+        _card.layer.cornerRadius = 12.0;
+        _card.layer.masksToBounds = YES;
+        [self addSubview:_card];
+        
+        _iconView = [[UIView alloc] initWithFrame:CGRectZero];
+        _iconView.layer.cornerRadius = 8.0;
+        _iconView.layer.masksToBounds = YES;
+        _iconView.backgroundColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *tc) {
+            if (tc.userInterfaceStyle == UIUserInterfaceStyleDark) {
+                return [UIColor colorWithRed:0.18 green:0.30 blue:0.22 alpha:1.0];
+            }
+            return [UIColor colorWithRed:0.90 green:0.96 blue:0.92 alpha:1.0];
+        }];
+        [_card addSubview:_iconView];
+        
+        _iconImg = [[UIImageView alloc] initWithFrame:CGRectZero];
+        _iconImg.contentMode = UIViewContentModeScaleAspectFit;
+        _iconImg.tintColor = [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1.0];
+        if (@available(iOS 13.0, *)) {
+            UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold];
+            _iconImg.image = [UIImage systemImageNamed:@"arrow.triangle.2.circlepath" withConfiguration:cfg];
+        }
+        [_iconView addSubview:_iconImg];
+        
+        _titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        _titleLabel.text = @"脚本每日自动更新";
+        _titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+        _titleLabel.textColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *tc) {
+            return (tc.userInterfaceStyle == UIUserInterfaceStyleDark) ? UIColor.whiteColor : UIColor.blackColor;
+        }];
+        [_card addSubview:_titleLabel];
+        
+        _detailLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        _detailLabel.tag = FDMUserScriptDetailTag;
+        _detailLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+        _detailLabel.textColor = UIColor.secondaryLabelColor;
+        _detailLabel.adjustsFontSizeToFitWidth = YES;
+        _detailLabel.minimumScaleFactor = 0.85;
+        [_card addSubview:_detailLabel];
+        
+        _sw = [[UISwitch alloc] init];
+        _sw.tag = FDMUserScriptSwitchTag;
+        _sw.onTintColor = [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1.0];
+        [_card addSubview:_sw];
+    }
+    return self;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGFloat width = self.bounds.size.width;
+    if (width <= 0) return;
+    
+    BOOL isPad = (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad);
+    CGFloat sideMargin = isPad ? 20.0 : 15.0;
+    CGFloat cardWidth = width - sideMargin * 2.0;
+    const CGFloat cardHeight = 76.0;
+    
+    // Look up lower cells to match horizontal alignment precisely
+    UIView *matchedSwitch = nil;
+    UIView *matchedCard = nil;
+    UIView *matchedLogo = nil;
+    if ([self.superview isKindOfClass:UITableView.class]) {
+        UITableView *tv = (UITableView *)self.superview;
+        for (UITableViewCell *c in tv.visibleCells) {
+            UIView *s = [c valueForKey:@"switchView"];
+            UIView *b = [c valueForKey:@"backView"];
+            if ([s isKindOfClass:UIView.class] && s.bounds.size.width > 0) {
+                matchedSwitch = s;
+                matchedCard = b;
+                matchedLogo = [c valueForKey:@"logo"];
+                break;
+            }
+        }
+    }
+    
+    if (matchedCard && matchedCard.superview) {
+        CGRect rInSelf = [matchedCard.superview convertRect:matchedCard.frame toView:self];
+        if (rInSelf.size.width > 100.0 && rInSelf.origin.x >= 0.0) {
+            sideMargin = rInSelf.origin.x;
+            cardWidth = rInSelf.size.width;
+        }
+    }
+    
+    self.card.frame = CGRectMake(sideMargin, 6.0, cardWidth, cardHeight);
+    
+    // Icon alignment
+    CGFloat iconSize = 36.0;
+    CGFloat iconX = 14.0;
+    if (matchedLogo && matchedLogo.superview) {
+        CGRect logoInCard = [matchedLogo.superview convertRect:matchedLogo.frame toView:self.card];
+        if (logoInCard.origin.x > 0.0 && logoInCard.origin.x < cardWidth / 2.0) {
+            iconX = logoInCard.origin.x;
+            if (matchedLogo.frame.size.width > 0.0) {
+                iconSize = matchedLogo.frame.size.width;
+            }
+        }
+    }
+    self.iconView.frame = CGRectMake(iconX, (cardHeight - iconSize) / 2.0, iconSize, iconSize);
+    self.iconImg.frame = CGRectMake((iconSize - 22.0) / 2.0, (iconSize - 22.0) / 2.0, 22.0, 22.0);
+    
+    // Switch alignment: perfectly align with cell switch!
+    CGSize swSize = self.sw.bounds.size;
+    if (swSize.width <= 0) swSize = CGSizeMake(51.0, 31.0);
+    CGFloat swRightOffset = isPad ? 20.0 : 10.0;
+    CGFloat swX = cardWidth - swSize.width - swRightOffset;
+    if (matchedSwitch && matchedSwitch.superview) {
+        CGRect swInCard = [matchedSwitch.superview convertRect:matchedSwitch.frame toView:self.card];
+        if (swInCard.origin.x > iconX + iconSize + 20.0 && swInCard.origin.x + swSize.width <= cardWidth + 5.0) {
+            swX = swInCard.origin.x;
+        }
+    }
+    self.sw.frame = CGRectMake(swX, (cardHeight - swSize.height) / 2.0, swSize.width, swSize.height);
+    
+    // Middle text area: strictly bounded between icon and switch
+    CGFloat textX = iconX + iconSize + 12.0;
+    CGFloat textRight = swX - 8.0;
+    CGFloat textWidth = textRight - textX;
+    if (textWidth < 60.0) textWidth = 60.0;
+    
+    self.titleLabel.frame = CGRectMake(textX, 16.0, textWidth, 20.0);
+    self.detailLabel.frame = CGRectMake(textX, 40.0, textWidth, 18.0);
+}
+
+@end
+
+#pragma mark - FDMUserScriptUpdater Implementation
+
 @implementation FDMUserScriptUpdater
 
 + (BOOL)isAutoUpdateEnabled {
@@ -159,147 +313,6 @@ static void (*orig_UserScriptController_reloadData)(id, SEL);
         if (completion) completion(NO);
     }
 }
-
-#pragma mark - Custom Header View
-
-@interface FDMUserScriptHeaderView : UIView
-@property (nonatomic, strong) UIView *card;
-@property (nonatomic, strong) UIView *iconView;
-@property (nonatomic, strong) UIImageView *iconImg;
-@property (nonatomic, strong) UILabel *titleLabel;
-@property (nonatomic, strong) UILabel *detailLabel;
-@property (nonatomic, strong) UISwitch *sw;
-@end
-
-@implementation FDMUserScriptHeaderView
-
-- (instancetype)initWithFrame:(CGRect)frame {
-    self = [super initWithFrame:frame];
-    if (self) {
-        self.tag = FDMUserScriptHeaderTag;
-        self.backgroundColor = [UIColor clearColor];
-        
-        _card = [[UIView alloc] initWithFrame:CGRectZero];
-        _card.backgroundColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *tc) {
-            if (tc.userInterfaceStyle == UIUserInterfaceStyleDark) {
-                return [UIColor colorWithRed:0.11 green:0.11 blue:0.12 alpha:1.0];
-            }
-            return [UIColor whiteColor];
-        }];
-        _card.layer.cornerRadius = 12.0;
-        _card.layer.masksToBounds = YES;
-        [self addSubview:_card];
-        
-        _iconView = [[UIView alloc] initWithFrame:CGRectZero];
-        _iconView.layer.cornerRadius = 8.0;
-        _iconView.layer.masksToBounds = YES;
-        _iconView.backgroundColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *tc) {
-            if (tc.userInterfaceStyle == UIUserInterfaceStyleDark) {
-                return [UIColor colorWithRed:0.18 green:0.30 blue:0.22 alpha:1.0];
-            }
-            return [UIColor colorWithRed:0.90 green:0.96 blue:0.92 alpha:1.0];
-        }];
-        [_card addSubview:_iconView];
-        
-        _iconImg = [[UIImageView alloc] initWithFrame:CGRectZero];
-        _iconImg.contentMode = UIViewContentModeScaleAspectFit;
-        _iconImg.tintColor = [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1.0];
-        if (@available(iOS 13.0, *)) {
-            UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold];
-            _iconImg.image = [UIImage systemImageNamed:@"arrow.triangle.2.circlepath" withConfiguration:cfg];
-        }
-        [_iconView addSubview:_iconImg];
-        
-        _titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-        _titleLabel.text = @"脚本每日自动更新";
-        _titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
-        _titleLabel.textColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *tc) {
-            return (tc.userInterfaceStyle == UIUserInterfaceStyleDark) ? UIColor.whiteColor : UIColor.blackColor;
-        }];
-        [_card addSubview:_titleLabel];
-        
-        _detailLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-        _detailLabel.tag = FDMUserScriptDetailTag;
-        _detailLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
-        _detailLabel.textColor = UIColor.secondaryLabelColor;
-        _detailLabel.adjustsFontSizeToFitWidth = YES;
-        _detailLabel.minimumScaleFactor = 0.85;
-        [_card addSubview:_detailLabel];
-        
-        _sw = [[UISwitch alloc] init];
-        _sw.tag = FDMUserScriptSwitchTag;
-        _sw.onTintColor = [UIColor colorWithRed:0.20 green:0.78 blue:0.35 alpha:1.0];
-        [_card addSubview:_sw];
-    }
-    return self;
-}
-
-- (void)layoutSubviews {
-    [super layoutSubviews];
-    CGFloat width = self.bounds.size.width;
-    if (width <= 0) return;
-    
-    CGFloat cardMargin = 16.0;
-    CGFloat cardWidth = width - 32.0;
-    const CGFloat cardHeight = 76.0;
-    
-    // Look up lower cells to match horizontal alignment precisely
-    UIView *cellSwitch = nil;
-    UIView *cellLogo = nil;
-    if ([self.superview isKindOfClass:UITableView.class]) {
-        UITableView *tv = (UITableView *)self.superview;
-        for (UITableViewCell *c in tv.visibleCells) {
-            UIView *s = [c valueForKey:@"switchView"];
-            if ([s isKindOfClass:UIView.class] && s.bounds.size.width > 0) {
-                if (c.frame.size.width > 0) {
-                    cardMargin = c.frame.origin.x;
-                    cardWidth = c.frame.size.width;
-                }
-                cellSwitch = s;
-                cellLogo = [c valueForKey:@"logo"];
-                break;
-            }
-        }
-    }
-    
-    self.card.frame = CGRectMake(cardMargin, 6.0, cardWidth, cardHeight);
-    
-    // Icon alignment
-    CGFloat iconSize = 36.0;
-    CGFloat iconX = 14.0;
-    if (cellLogo && [cellLogo isKindOfClass:UIView.class]) {
-        CGPoint logoInCard = [cellLogo.superview convertPoint:cellLogo.frame.origin toView:self.card];
-        if (logoInCard.x > 0 && logoInCard.x < cardWidth / 2.0) {
-            iconX = logoInCard.x;
-            iconSize = cellLogo.frame.size.width > 0 ? cellLogo.frame.size.width : 36.0;
-        }
-    }
-    self.iconView.frame = CGRectMake(iconX, (cardHeight - iconSize) / 2.0, iconSize, iconSize);
-    self.iconImg.frame = CGRectMake((iconSize - 22.0) / 2.0, (iconSize - 22.0) / 2.0, 22.0, 22.0);
-    
-    // Switch alignment: perfectly align with cell switch!
-    CGSize swSize = self.sw.bounds.size;
-    if (swSize.width <= 0) swSize = CGSizeMake(51.0, 31.0);
-    CGFloat swX = cardWidth - swSize.width - 12.0;
-    if (cellSwitch) {
-        CGPoint swInCard = [cellSwitch.superview convertPoint:cellSwitch.frame.origin toView:self.card];
-        if (swInCard.x > iconX + iconSize + 20.0 && swInCard.x + swSize.width <= cardWidth + 5.0) {
-            swX = swInCard.x;
-        }
-    }
-    self.sw.frame = CGRectMake(swX, (cardHeight - swSize.height) / 2.0, swSize.width, swSize.height);
-    
-    // Middle text area
-    CGFloat textX = iconX + iconSize + 12.0;
-    CGFloat textRight = swX - 8.0;
-    CGFloat textWidth = textRight - textX;
-    if (textWidth < 100.0) textWidth = 100.0;
-    
-    self.titleLabel.frame = CGRectMake(textX, 16.0, textWidth, 20.0);
-    self.detailLabel.frame = CGRectMake(textX, 40.0, textWidth, 18.0);
-}
-
-@end
 
 #pragma mark - UI Integration
 
