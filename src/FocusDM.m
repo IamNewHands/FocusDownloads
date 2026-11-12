@@ -15,6 +15,7 @@
 #import "FDMPageNavigation.h"
 #import "FDMAdBlockUpdater.h"
 #import "FDMUserScriptUpdater.h"
+#import "FDMTranslateProxy.h"
 
 static NSString *const FDMDownloadsLink = @"focusdm://downloads";
 static NSString *const FDMSitePoliciesLink = @"focusdm://site-policies";
@@ -367,6 +368,7 @@ static void FDMInstallHostHooks(void) {
     FDMInstallNavigationHooks();
     [FDMAdBlockUpdater installHooks];
     [FDMUserScriptUpdater installHooks];
+    [FDMTranslateProxy installHooks];
 }
 
 #if defined(FDM_TESTING)
