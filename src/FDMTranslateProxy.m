@@ -3,6 +3,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <UIKit/UIKit.h>
+#import <WebKit/WebKit.h>
 
 static NSString *const FDMEdgeUserAgent = @"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0.0";
 static NSString *const FDMEdgeEndpoint = @"https://edge.microsoft.com/translate/translatetext";
@@ -257,12 +258,13 @@ static void fdm_PandaWebView_safeTranslate(id self, SEL _cmd, id sender) {
     (void)_cmd;
     @try {
         // 1. Forward to super (WKWebView's native translate: method)
-        struct objc_super sup = {
-            .receiver = self,
-            .super_class = class_getSuperclass([self class])
-        };
+        Class wkClass = NSClassFromString(@"WKWebView");
         SEL transSel = @selector(translate:);
-        if ([WKWebView instancesRespondToSelector:transSel]) {
+        if (wkClass && [wkClass instancesRespondToSelector:transSel]) {
+            struct objc_super sup = {
+                .receiver = self,
+                .super_class = class_getSuperclass([self class])
+            };
             ((void (*)(struct objc_super *, SEL, id))objc_msgSendSuper)(&sup, transSel, sender);
             return;
         }
@@ -305,11 +307,12 @@ static BOOL fdm_PandaWebView_canPerformAction(id self, SEL _cmd, SEL action, id 
         return YES;
     }
     
-    struct objc_super sup = {
-        .receiver = self,
-        .super_class = class_getSuperclass([self class])
-    };
-    if ([WKWebView instancesRespondToSelector:@selector(canPerformAction:withSender:)]) {
+    Class wkClass = NSClassFromString(@"WKWebView");
+    if (wkClass && [wkClass instancesRespondToSelector:@selector(canPerformAction:withSender:)]) {
+        struct objc_super sup = {
+            .receiver = self,
+            .super_class = class_getSuperclass([self class])
+        };
         return ((BOOL (*)(struct objc_super *, SEL, SEL, id))objc_msgSendSuper)(&sup, @selector(canPerformAction:withSender:), action, sender);
     }
     return NO;
