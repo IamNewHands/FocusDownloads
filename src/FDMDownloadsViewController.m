@@ -300,15 +300,30 @@ static NSString *FDMRowDetail(NSDictionary *row) {
 - (void)closePage { [self stopObserving]; [self dismissViewControllerAnimated:YES completion:nil]; }
 - (void)startObserving {
     if (_timer) return;
-    __weak typeof(self) weakSelf = self;
-    _timer = [NSTimer timerWithTimeInterval:1 repeats:YES block:^(NSTimer *timer) { [weakSelf refresh]; }];
-    [NSRunLoop.mainRunLoop addTimer:_timer forMode:NSDefaultRunLoopMode];
+    [self armRefreshTimer];
     _observers = [NSMutableArray array];
+    __weak typeof(self) weakSelf = self;
     for (NSString *name in @[FDMRecordsDidChangeNotification, UIApplicationDidBecomeActiveNotification, UIContentSizeCategoryDidChangeNotification]) {
         id token = [NSNotificationCenter.defaultCenter addObserverForName:name object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) { [weakSelf refresh]; }];
         [_observers addObject:token];
     }
 }
+// Only a live transfer changes rows on its own; an idle list is already refreshed by
+// store notifications, so polling it every second rebuilds and re-sorts every row for
+// nothing. The timer re-arms itself with the interval the current state needs.
+- (void)armRefreshTimer {
+    [_timer invalidate];
+    NSTimeInterval interval = _active.count > 0 ? 1 : 5;
+    __weak typeof(self) weakSelf = self;
+    _timer = [NSTimer timerWithTimeInterval:interval repeats:NO block:^(NSTimer *timer) {
+        typeof(self) self = weakSelf;
+        if (!self) return;
+        [self refresh];
+        [self armRefreshTimer];
+    }];
+    [NSRunLoop.mainRunLoop addTimer:_timer forMode:NSDefaultRunLoopMode];
+}
+
 - (void)stopObserving {
     _refreshReady = NO;
     _refreshScheduled = NO;
