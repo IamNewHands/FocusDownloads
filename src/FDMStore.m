@@ -104,7 +104,8 @@
     __block NSError *failure;
     dispatch_sync(_queue, ^{
         NSMutableArray *next = [_records mutableCopy];
-        NSIndexSet *matches = [next indexesOfObjectsPassingTest:^BOOL(NSDictionary *row, NSUInteger index, BOOL *stop) { return [row[@"key"] isEqual:key]; }];
+        // The block signature requires a position and a stop flag; only the row matters here.
+        NSIndexSet *matches = [next indexesOfObjectsPassingTest:^BOOL(NSDictionary *row, NSUInteger __unused index, BOOL * __unused stop) { return [row[@"key"] isEqual:key]; }];
         if (!matches.count) return;
         [next removeObjectsAtIndexes:matches];
         ok = [self writeRecords:next error:&failure];
