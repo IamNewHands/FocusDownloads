@@ -16,6 +16,31 @@ static NSMutableDictionary *FDMFixtureVault(void) {
     return values;
 }
 #endif
+// Bounded in-process copy of envelopes already read or written here. It only avoids a
+// repeated Security round trip; expiry and schema checks still run on every read, and every
+// write replaces the entry, so a cached envelope is never newer than the Keychain item.
+static const NSUInteger FDMVaultCacheLimit = 64;
+static NSMutableDictionary<NSString *, NSDictionary *> *FDMVaultCache(void) {
+    static NSMutableDictionary *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ cache = [NSMutableDictionary dictionary]; });
+    return cache;
+}
+static NSDictionary *FDMVaultCached(NSString *objectID) {
+    @synchronized (FDMVaultCache()) { return FDMVaultCache()[objectID]; }
+}
+static void FDMVaultCacheStore(NSString *objectID, NSDictionary *envelope) {
+    if (!objectID.length || ![envelope isKindOfClass:NSDictionary.class]) return;
+    @synchronized (FDMVaultCache()) {
+        NSMutableDictionary *cache = FDMVaultCache();
+        [cache removeObjectForKey:objectID];
+        cache[objectID] = envelope;
+        while (cache.count > FDMVaultCacheLimit) [cache removeObjectForKey:cache.allKeys.firstObject];
+    }
+}
+static void FDMVaultCacheDrop(NSString *objectID) {
+    @synchronized (FDMVaultCache()) { [FDMVaultCache() removeObjectForKey:objectID]; }
+}
 static BOOL FDMVaultValidID(NSString *objectID) {
     return [objectID isKindOfClass:NSString.class] && objectID.length > 0 && objectID.length <= 180 &&
         [objectID rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location == NSNotFound;
@@ -24,8 +49,11 @@ BOOL FDMVaultPut(NSString *objectID, NSData *data, NSTimeInterval expiresAt, NSE
     if (!FDMVaultValidID(objectID) || ![data isKindOfClass:NSData.class] || data.length > 16 * 1024 * 1024 ||
         !isfinite(expiresAt) || expiresAt < 0) { if (error) *error = FDMVaultError(errSecParam); return NO; }
     NSDictionary *envelope = @{@"schema": @1, @"data": data, @"expiresAt": @(expiresAt)};
+    // Rewriting the same envelope would cost two Security calls and change nothing.
+    if ([FDMVaultCached(objectID) isEqual:envelope]) return YES;
 #ifdef FDM_TESTING
     @synchronized (FDMFixtureVault()) { FDMFixtureVault()[objectID] = envelope; }
+    FDMVaultCacheStore(objectID, envelope);
     return YES;
 #else
     NSData *bytes = [NSPropertyListSerialization dataWithPropertyList:envelope format:NSPropertyListBinaryFormat_v1_0 options:0 error:error];
@@ -43,24 +71,27 @@ BOOL FDMVaultPut(NSString *objectID, NSData *data, NSTimeInterval expiresAt, NSE
         status = SecItemAdd((__bridge CFDictionaryRef)insert, NULL);
     }
     if (status != errSecSuccess && error) *error = FDMVaultError(status);
+    if (status == errSecSuccess) FDMVaultCacheStore(objectID, envelope);
     return status == errSecSuccess;
 #endif
 }
 NSData *FDMVaultGet(NSString *objectID, NSError **error) {
     if (!FDMVaultValidID(objectID)) { if (error) *error = FDMVaultError(errSecParam); return nil; }
-    NSDictionary *envelope = nil;
+    NSDictionary *envelope = FDMVaultCached(objectID);
 #ifdef FDM_TESTING
-    @synchronized (FDMFixtureVault()) { envelope = FDMFixtureVault()[objectID]; }
+    if (!envelope) @synchronized (FDMFixtureVault()) { envelope = FDMFixtureVault()[objectID]; }
 #else
-    NSDictionary *query = @{(__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
-        (__bridge id)kSecAttrService: FDMVaultService, (__bridge id)kSecAttrAccount: objectID,
-        (__bridge id)kSecAttrSynchronizable: @NO, (__bridge id)kSecReturnData: @YES,
-        (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitOne};
-    CFTypeRef result = NULL;
-    OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
-    if (status != errSecSuccess) { if (error) *error = FDMVaultError(status); return nil; }
-    NSData *bytes = CFBridgingRelease(result);
-    envelope = [NSPropertyListSerialization propertyListWithData:bytes options:NSPropertyListImmutable format:NULL error:error];
+    if (!envelope) {
+        NSDictionary *query = @{(__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+            (__bridge id)kSecAttrService: FDMVaultService, (__bridge id)kSecAttrAccount: objectID,
+            (__bridge id)kSecAttrSynchronizable: @NO, (__bridge id)kSecReturnData: @YES,
+            (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitOne};
+        CFTypeRef result = NULL;
+        OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
+        if (status != errSecSuccess) { if (error) *error = FDMVaultError(status); return nil; }
+        NSData *bytes = CFBridgingRelease(result);
+        envelope = [NSPropertyListSerialization propertyListWithData:bytes options:NSPropertyListImmutable format:NULL error:error];
+    }
 #endif
     if (![envelope isKindOfClass:NSDictionary.class] || ![envelope[@"schema"] isEqual:@1] ||
         ![envelope[@"data"] isKindOfClass:NSData.class]) { if (error) *error = FDMVaultError(errSecDecode); return nil; }
@@ -68,5 +99,18 @@ NSData *FDMVaultGet(NSString *objectID, NSError **error) {
     if (!isfinite(expiration) || (expiration > 0 && expiration < NSDate.date.timeIntervalSince1970)) {
         if (error) *error = FDMVaultError(errSecItemNotFound); return nil;
     }
+    FDMVaultCacheStore(objectID, envelope);
     return envelope[@"data"];
+}
+void FDMVaultRemove(NSString *objectID) {
+    if (!FDMVaultValidID(objectID)) return;
+    FDMVaultCacheDrop(objectID);
+#ifdef FDM_TESTING
+    @synchronized (FDMFixtureVault()) { [FDMFixtureVault() removeObjectForKey:objectID]; }
+#else
+    NSDictionary *query = @{(__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService: FDMVaultService, (__bridge id)kSecAttrAccount: objectID,
+        (__bridge id)kSecAttrSynchronizable: @NO};
+    SecItemDelete((__bridge CFDictionaryRef)query);
+#endif
 }

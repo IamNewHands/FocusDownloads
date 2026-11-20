@@ -7,6 +7,7 @@
 #import "FDMEngine.h"
 #import "FDMStore.h"
 #import "FDMIntent.h"
+#import "FDMVault.h"
 #import <stdio.h>
 #import <stdlib.h>
 
@@ -818,6 +819,30 @@ static void FDMETestPrivateIntentAndOriginalPOST(void) {
     FDMECases++;
 }
 
+static void FDMETestVaultCacheAndRemoval(void) {
+    FDMEBeginCase(@"vault-cache-and-removal");
+    NSError *error = nil;
+    NSString *objectID = [@"vault-" stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSData *first = [@"first-envelope" dataUsingEncoding:NSUTF8StringEncoding];
+    NSTimeInterval expiry = NSDate.date.timeIntervalSince1970 + 3600;
+    FDMECheck(FDMVaultPut(objectID, first, expiry, &error), @"device-local object stored");
+    FDMECheck([FDMVaultGet(objectID, &error) isEqual:first], @"stored object reads back");
+    // A second read must not depend on the cache being cold.
+    FDMECheck([FDMVaultGet(objectID, &error) isEqual:first], @"repeat read returns the same envelope");
+    NSData *second = [@"second-envelope" dataUsingEncoding:NSUTF8StringEncoding];
+    FDMECheck(FDMVaultPut(objectID, second, expiry, &error), @"stored object replaced");
+    FDMECheck([FDMVaultGet(objectID, &error) isEqual:second], @"replacement is what the next read sees");
+    FDMVaultRemove(objectID);
+    error = nil;
+    FDMECheck(FDMVaultGet(objectID, &error) == nil && error, @"removed object is gone for the next read");
+    // Removing an unknown or invalid identifier is a no-op, not a crash.
+    FDMVaultRemove(@"never-stored");
+    NSString *emptyID = nil;
+    FDMVaultRemove(emptyID);
+    FDMVaultRemove(@"");
+    FDMECases++;
+}
+
 void FDMRunEngineRegression(void) {
     @autoreleasepool {
         FDMECheck(NSThread.isMainThread, @"call the regression entry on main");
@@ -848,6 +873,7 @@ void FDMRunEngineRegression(void) {
         FDMETestStartPersistenceRollback();
         FDMETestBackgroundPersistenceRecovery();
         FDMETestDurableHistoryAndStaleTasks(NO); FDMETestDurableHistoryAndStaleTasks(YES);
+        FDMETestVaultCacheAndRemoval();
         FDMEFlushMain();
         printf("FDMEngine regression: %lu scenarios passed; fixture root=%s\n", (unsigned long)FDMECases, FDMERoot.fileSystemRepresentation);
         // Keep the allocated root and environment for the parent runner's other

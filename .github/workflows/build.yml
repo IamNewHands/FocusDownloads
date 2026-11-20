@@ -60,6 +60,10 @@ jobs:
       - name: WebKit navigation and original request regression
         id: webkit
         continue-on-error: true
+        # The last simulator user in this job: leaving the device booted lets the next run
+        # skip the cold boot and its data migration entirely.
+        env:
+          FDM_SIM_KEEP_BOOTED: "1"
         run: python3 tests/run_navigation_simulator.py
 
       - name: Build all arm64 modules

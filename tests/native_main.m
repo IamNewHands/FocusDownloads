@@ -54,6 +54,23 @@ static void FDMRunCommonRegression(void) {
     NSDictionary *old = [before filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"key == %@", @"common-record"]].firstObject;
     NSCAssert([old[@"state"] integerValue] == FDMStateFailed, @"history immutable snapshot survives update");
     NSCAssert([FDMStore.shared dropKey:@"common-record" error:&error], @"history drop");
+    // The key index must answer exactly like the record list, including a missing key.
+    NSCAssert([FDMStore.shared recordForKey:@"common-record"] == nil, @"dropped key leaves the index");
+    NSCAssert([FDMStore.shared recordForKey:@""] == nil && [FDMStore.shared recordForKey:@"never-written"] == nil, @"unknown keys resolve to nil");
+    NSDictionary *first = @{@"key": @"batch-first", @"state": @(FDMStateDownloading)};
+    NSDictionary *second = @{@"key": @"batch-second", @"state": @(FDMStateDownloading)};
+    [FDMStore.shared beginBatch];
+    NSCAssert([FDMStore.shared upsertRecord:first error:&error], @"batched write one");
+    NSCAssert([FDMStore.shared upsertRecord:second error:&error], @"batched write two");
+    // Writes inside a batch are visible to the index immediately, before the batch ends.
+    NSCAssert([[FDMStore.shared recordForKey:@"batch-first"] isEqual:first], @"batched record readable inside the batch");
+    [FDMStore.shared endBatch];
+    NSDictionary *updated = @{@"key": @"batch-first", @"state": @(FDMStatePaused)};
+    NSCAssert([FDMStore.shared upsertRecord:updated error:&error], @"indexed replace");
+    NSCAssert([[FDMStore.shared recordForKey:@"batch-first"] isEqual:updated], @"replace updates the index");
+    NSArray *listed = [FDMStore.shared records];
+    NSCAssert([listed.firstObject isEqual:updated] && listed.count == 2, @"replace moves the record to the front exactly once");
+    NSCAssert([FDMStore.shared dropKey:@"batch-first" error:&error] && [FDMStore.shared dropKey:@"batch-second" error:&error], @"batch fixtures removed");
     printf("common regression passed\n");
 }
 

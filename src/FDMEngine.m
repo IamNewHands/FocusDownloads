@@ -1043,6 +1043,10 @@ static const void *FDMEngineQueueKey = &FDMEngineQueueKey;
                 }
                 [self->_requests removeObjectForKey:canonical];
                 [self->_memoryResume removeObjectForKey:[self resumeObjectID:row ?: record]];
+                // The history row is gone, so its device-local request and resume objects must go too.
+                NSDictionary *vaulted = row ?: record;
+                FDMVaultRemove(FDMString(vaulted[@"resumeVaultID"]));
+                FDMVaultRemove(FDMString(vaulted[@"requestVaultID"]));
                 for (NSString *token in [self->_pauses.allKeys copy]) if ([self->_pauses[token][@"key"] isEqual:canonical]) [self->_pauses removeObjectForKey:token];
                 if (row) [self->_items removeObject:row];
                 NSError *persistError = nil;

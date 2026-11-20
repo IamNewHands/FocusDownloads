@@ -3,8 +3,11 @@
 @implementation FDMStore {
     dispatch_queue_t _queue;
     NSMutableArray<NSDictionary *> *_records;
+    NSMutableDictionary<NSString *, NSDictionary *> *_index;
     NSString *_path;
     BOOL _writable;
+    NSUInteger _batchDepth;
+    BOOL _notifyPending;
 }
 
 + (instancetype)shared {
@@ -19,6 +22,7 @@
         _queue = dispatch_queue_create("FocusDM.history", DISPATCH_QUEUE_SERIAL);
         _path = [FDMDirectory(@"FocusDM") stringByAppendingPathComponent:@"history.json"];
         _records = [NSMutableArray array];
+        _index = [NSMutableDictionary dictionary];
         _writable = YES;
         NSError *error = nil;
         id root = FDMReadJSON(_path, &error);
@@ -32,7 +36,11 @@
         }
         for (id row in [rows isKindOfClass:NSArray.class] ? rows : @[]) {
             if (!FDMValidStoredRecord(row)) { _writable = NO; continue; }
-            [_records addObject:FDMImmutableRecord(row)];
+            NSDictionary *record = FDMImmutableRecord(row);
+            [_records addObject:record];
+            // First match wins, exactly like the linear scan this index replaces.
+            NSString *key = FDMString(record[@"key"]);
+            if (key.length && !_index[key]) _index[key] = record;
         }
     }
     return self;
@@ -47,9 +55,7 @@
 - (NSDictionary *)recordForKey:(NSString *)key {
     if (!key.length) return nil;
     __block NSDictionary *result;
-    dispatch_sync(_queue, ^{
-        for (NSDictionary *row in _records) if ([row[@"key"] isEqual:key]) { result = row; break; }
-    });
+    dispatch_sync(_queue, ^{ result = self->_index[key]; });
     return result;
 }
 
@@ -68,26 +74,33 @@
     if (!key.length) { if (error) *error = FDMError(@"记录缺少任务身份"); return NO; }
     NSDictionary *immutable = FDMImmutableRecord(record);
     __block BOOL ok = YES;
-    __block BOOL changed = NO;
+    __block BOOL notify = NO;
     __block NSError *failure;
     dispatch_sync(_queue, ^{
-        NSUInteger oldIndex = [_records indexOfObjectPassingTest:^BOOL(NSDictionary *row, NSUInteger index, BOOL *stop) { return [row[@"key"] isEqual:key]; }];
-        if (oldIndex != NSNotFound && [_records[oldIndex] isEqual:immutable]) return;
+        NSDictionary *old = self->_index[key];
+        if (old && [old isEqual:immutable]) return;
         NSMutableArray *next = [_records mutableCopy];
-        if (oldIndex != NSNotFound) [next removeObjectAtIndex:oldIndex];
+        if (old) {
+            NSUInteger position = [next indexOfObjectIdenticalTo:old];
+            if (position != NSNotFound) [next removeObjectAtIndex:position];
+        }
         [next insertObject:immutable atIndex:0];
         ok = [self writeRecords:next error:&failure];
-        if (ok) { _records = next; changed = YES; }
+        if (!ok) return;
+        self->_records = next;
+        self->_index[key] = immutable;
+        if (self->_batchDepth > 0) self->_notifyPending = YES;
+        else notify = YES;
     });
     if (!ok && error) *error = failure;
-    if (changed) FDMNotifyRecordsChanged();
+    if (notify) FDMNotifyRecordsChanged();
     return ok;
 }
 
 - (BOOL)dropKey:(NSString *)key error:(NSError **)error {
     if (!key.length) return YES;
     __block BOOL ok = YES;
-    __block BOOL changed = NO;
+    __block BOOL notify = NO;
     __block NSError *failure;
     dispatch_sync(_queue, ^{
         NSMutableArray *next = [_records mutableCopy];
@@ -95,10 +108,27 @@
         if (!matches.count) return;
         [next removeObjectsAtIndexes:matches];
         ok = [self writeRecords:next error:&failure];
-        if (ok) { _records = next; changed = YES; }
+        if (!ok) return;
+        self->_records = next;
+        [self->_index removeObjectForKey:key];
+        if (self->_batchDepth > 0) self->_notifyPending = YES;
+        else notify = YES;
     });
     if (!ok && error) *error = failure;
-    if (changed) FDMNotifyRecordsChanged();
+    if (notify) FDMNotifyRecordsChanged();
     return ok;
+}
+
+- (void)beginBatch {
+    dispatch_sync(_queue, ^{ self->_batchDepth += 1; });
+}
+
+- (void)endBatch {
+    __block BOOL notify = NO;
+    dispatch_sync(_queue, ^{
+        if (self->_batchDepth > 0) self->_batchDepth -= 1;
+        if (self->_batchDepth == 0 && self->_notifyPending) { self->_notifyPending = NO; notify = YES; }
+    });
+    if (notify) FDMNotifyRecordsChanged();
 }
 @end

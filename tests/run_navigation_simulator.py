@@ -86,6 +86,10 @@ def main():
     created_boot = device.get("state") != "Booted"
     server = None
     bundle = "local.focusdm.navigation-regression.r" + uuid.uuid4().hex
+    # Booting is asynchronous: start it before the compile and wait for readiness after it, so
+    # the cold boot and its first-boot data migration overlap the build instead of preceding it.
+    if created_boot:
+        run(["xcrun", "simctl", "boot", identifier])
     try:
         server, port, request_log = start_server(root, work)
         origin = f"http://localhost:{port}"
@@ -132,8 +136,6 @@ def main():
         run(command)
         run(["codesign", "--force", "--sign", "-", str(output)])
 
-        if created_boot:
-            run(["xcrun", "simctl", "boot", identifier])
         run(["xcrun", "simctl", "bootstatus", identifier, "-b"])
 
         run(["xcrun", "simctl", "install", identifier, str(output)])
@@ -163,7 +165,10 @@ def main():
         return 0
     finally:
         subprocess.run(["xcrun", "simctl", "terminate", identifier, bundle], check=False)
-        if created_boot:
+        # This step is the last simulator user in CI. Shutting the device down would make the
+        # next run pay a cold boot plus data migration again; the workflow opts in to keeping
+        # it booted and a local run still cleans up after itself.
+        if created_boot and os.environ.get("FDM_SIM_KEEP_BOOTED") != "1":
             subprocess.run(["xcrun", "simctl", "shutdown", identifier], check=False)
         if server is not None and server.poll() is None:
             server.send_signal(signal.SIGTERM)

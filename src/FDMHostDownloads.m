@@ -215,6 +215,9 @@ NSDictionary *FDMHostProjectTask(id task, NSString *key, BOOL pauseIntent, NSDic
     if (!NSThread.isMainThread) { dispatch_async(dispatch_get_main_queue(), ^{ [self refresh]; }); return; }
     if (_refreshing) return;
     _refreshing = YES;
+    // One refresh can persist dozens of rows; a single notification at the end keeps the
+    // list from reloading once per task.
+    [FDMStore.shared beginBatch];
     for (NSString *key in _suppressed) {
         if ([FDMStore.shared recordForKey:key]) {
             NSError *cleanup = nil;
@@ -258,6 +261,7 @@ NSDictionary *FDMHostProjectTask(id task, NSString *key, BOOL pauseIntent, NSDic
         _entries[key] = FDMImmutableRecord(row);
         [self saveRow:row];
     }
+    [FDMStore.shared endBatch];
     _refreshing = NO;
 }
 

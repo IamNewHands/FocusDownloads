@@ -37,9 +37,10 @@ def main():
     device = candidates[0][2]
     identifier = device["udid"]
     created_boot = device.get("state") != "Booted"
+    # Booting is asynchronous: start it now and wait for readiness after the compile, so the
+    # cold boot and its first-boot data migration overlap the build instead of preceding it.
     if created_boot:
         run(["xcrun", "simctl", "boot", identifier])
-    run(["xcrun", "simctl", "bootstatus", identifier, "-b"])
     bundle = "local.focusdm.icon-regression.r" + uuid.uuid4().hex
     info = {
         "CFBundleIdentifier": bundle, "CFBundleExecutable": "IconRegression",
@@ -61,6 +62,7 @@ def main():
                     "tests/icons_app_main.m", "-o", str(output / "IconRegression")])
     run(command)
     run(["codesign", "--force", "--sign", "-", str(output)])
+    run(["xcrun", "simctl", "bootstatus", identifier, "-b"])
     try:
         run(["xcrun", "simctl", "install", identifier, str(output)])
         run(["xcrun", "simctl", "launch", identifier, bundle])

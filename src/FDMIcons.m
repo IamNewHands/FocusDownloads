@@ -142,19 +142,28 @@ static FDMIconStore *FDMSharedIconStore;
         _queueIdentity = &_queueIdentity;
         dispatch_queue_set_specific(_io, _queueIdentity, _queueIdentity, NULL);
         dispatch_sync(_io, ^{
-            for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:self->_directory error:nil]) {
+            // One directory pass. Epoch journals are read before the image records that
+            // reference them, so a second full listing and its extra stat/read round is
+            // not needed.
+            NSArray *names = [NSFileManager.defaultManager contentsOfDirectoryAtPath:self->_directory error:nil];
+            NSMutableArray *recordNames = [NSMutableArray array];
+            for (NSString *name in names) {
+                NSString *extension = name.pathExtension;
                 NSDictionary *attributes = [NSFileManager.defaultManager attributesOfItemAtPath:[self->_directory stringByAppendingPathComponent:name] error:nil];
-                if ([attributes[NSFileType] isEqual:NSFileTypeRegular]) self->_diskBytes += [attributes[NSFileSize] unsignedLongLongValue];
-                if ([name.pathExtension isEqual:@"epoch"] && [attributes[NSFileType] isEqual:NSFileTypeRegular]) {
+                if (![attributes[NSFileType] isEqual:NSFileTypeRegular]) continue;
+                // Every regular file counts toward the cache size budget, including images.
+                self->_diskBytes += [attributes[NSFileSize] unsignedLongLongValue];
+                if ([extension isEqual:@"epoch"]) {
                     NSString *base = name.stringByDeletingPathExtension;
                     if (!FDMIconValidKey(base)) continue;
                     NSDictionary *journal = FDMReadJSON([self pathForKey:base extension:@"epoch"], nil);
                     if ([journal isKindOfClass:NSDictionary.class] && [journal[@"schema"] isEqual:@(FDMIconSchema)] && [journal[@"baseKey"] isEqual:base] && [journal[@"epoch"] isKindOfClass:NSNumber.class] && [journal[@"epoch"] unsignedIntegerValue] > 0 && [journal[@"epoch"] unsignedIntegerValue] < NSUIntegerMax) self->_epochs[base] = journal[@"epoch"];
                     else { [self->_blockedBases addObject:base]; FDMLog(@"icon: epoch metadata corrupt; old cache blocked base=%@", base); }
+                } else if ([extension isEqual:@"json"]) {
+                    [recordNames addObject:name];
                 }
             }
-            for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:self->_directory error:nil]) {
-                if (![name.pathExtension isEqual:@"json"]) continue;
+            for (NSString *name in recordNames) {
                 NSString *key = name.stringByDeletingPathExtension;
                 if (!FDMIconValidKey(key)) continue;
                 NSDictionary *record = FDMReadJSON([self pathForKey:key extension:@"json"], nil);
