@@ -482,10 +482,19 @@ class LiveGitProvenanceTests(unittest.TestCase):
                              provenance.source_file_manifest(root))
 
 
+def _default_ipa():
+    """Original Focus IPA: shared ipa/ directory first, then the legacy checkout root."""
+    checkout = Path(__file__).resolve().parents[2]
+    for candidate in (checkout / "ipa" / "Focus_2.9.7.ipa", checkout / "Focus_2.9.7.ipa"):
+        if candidate.is_file():
+            return candidate
+    return checkout / "ipa" / "Focus_2.9.7.ipa"
+
+
 class ActualFixtureTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.original_path = Path(__file__).resolve().parents[2] / "Focus_2.9.7.ipa"
+        cls.original_path = _default_ipa()
         cls.reference_path = cls.original_path.with_name("Focus_2.9.7_patched_v18.ipa")
         if not cls.original_path.is_file() or not cls.reference_path.is_file():
             raise unittest.SkipTest("reviewed local IPA fixtures are not present (not required on macOS CI)")

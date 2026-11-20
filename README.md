@@ -259,7 +259,7 @@ python -m unittest discover -s tests -p "test_*.py"
 
 ```powershell
 python tools/build_focus.py `
-  --ipa "Focus_2.9.7.ipa" `
+  --ipa "../ipa/Focus_2.9.7.ipa" `
   --dylib "_ci_dl/FocusDM.dylib" `
   --provenance "_ci_dl/FocusDM.provenance.json" `
   --source-root "D:\GitHub_Clone\FocusDownloads" `
