@@ -8,7 +8,7 @@
 - CI42837951395 失败：Foundation、WebKit、arm64 通过；备份错误诊断测试、UIKit 菜单关闭回调测试失败。`continue-on-error` 使步骤界面显示成功，总门禁仍按原始 outcome 正确阻止发布。
 - 两处失败已本地修正：导出保留回调错误，UIKit 测试跨真实主队列轮次执行；76 项 Python 检查通过。原生重跑仍待结果。
 - 本轮来源清单和产物上传尚未通过，没有包含本轮修复的新 IPA；不扩大无关测试矩阵。
-- 旧菜单修复包 `D:\GitHub_Clone\Focus_2.9.7_patched_v20_fix_dcab80e.ipa` 对应 `dcab80e46dd498a42d023aa795caff2f4d326dc5`，不包含 `a110b46` 的导出与转场修改。
+- 旧菜单修复包 `<workspace>\Focus_2.9.7_patched_v20_fix_dcab80e.ipa` 对应 `dcab80e46dd498a42d023aa795caff2f4d326dc5`，不包含 `a110b46` 的导出与转场修改。
 
 ## 历史批次
 
@@ -17,7 +17,7 @@
 - `6edfeef51baef87f14b56e5e0b7f8099ac066416` / CI42810388400：所有门禁通过。包含完整metadata冲突、文件名别名拒绝、真实 SQLite 与 .js 原文、读取屏障/并发写、rollbackPending 新owner恢复前像。备份类别选择UI完成并编译。
 - `8c26d2624f4d42fe3831795b1b40db85f8da4270` / CI42811920193：图片新GET到达但 Cookie 为空，门禁正确阻止产物；源页测试只等 URL，日志没有源页 GET，不能证明生产API不带Cookie。
 - `1de6277` / CI42813107978：总门禁与来源清单上传通过；真实原POST、本页图片GET/Cookie/成品、备份类别选择、原生回归均通过。
-- 已打包 `D:\GitHub_Clone\Focus_2.9.7_patched_v20.ipa`（20794022 bytes），SHA256 `cb80a348b8a2d208f26a27d73ecbc5d6001651bc93d4d99d0333a8a8b2716289`。打包器exit0，库/source/允许binarydiff/资源/ZIP读回通过。
+- 已打包 `<workspace>\Focus_2.9.7_patched_v20.ipa`（20794022 bytes），SHA256 `cb80a348b8a2d208f26a27d73ecbc5d6001651bc93d4d99d0333a8a8b2716289`。打包器exit0，库/source/允许binarydiff/资源/ZIP读回通过。
 - dylib位于 `_artifacts/focusdm/v20-1de62778369a7c9f24280db9eeb2832ff3c34bfe/FocusDM.dylib`（828464 bytes），SHA256 `54cbf7eb58b2057692a01b949556aa461f7d1aa389a99cd1ea79fbb00a2c3bc2`；同目录有provenance与安装说明。原IPA、v19 IPA最终hash再次确认未改变。
 
 ## 已实现与保存边界

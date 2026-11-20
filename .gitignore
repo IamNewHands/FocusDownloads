@@ -3,5 +3,7 @@ build/
 .DS_Store
 __pycache__/
 *.pyc
+_scratch/
+.ghcache/
 .packaging-test-*/
 .probe-*/

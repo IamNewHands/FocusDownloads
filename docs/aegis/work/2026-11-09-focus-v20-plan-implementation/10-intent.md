@@ -2,7 +2,7 @@
 
 ## Outcome / authority
 
-用户原请求：按 [实施方案](<D:/GitHub_Clone/_artifacts/focusdm/iOS-Browser-1-4-5-Implementation-Plan-20261108.md>) 完成 Focus 2.9.7 的①统一网页上下文下载、④精确站点策略、⑤选择性本地备份恢复；采用注入 dylib 可行路径。2026-11-09 用户两次要求继续，当时确认手机仍 v19；这是历史设备状态。
+用户原请求：按 [实施方案](<workspace>/_artifacts/focusdm/iOS-Browser-1-4-5-Implementation-Plan-20261108.md>) 完成 Focus 2.9.7 的①统一网页上下文下载、④精确站点策略、⑤选择性本地备份恢复；采用注入 dylib 可行路径。2026-11-09 用户两次要求继续，当时确认手机仍 v19；这是历史设备状态。
 
 2026-11-10 用户已安装 v20，并反馈备份导出失败、顶部闪透和侧滑退出残留。本轮要求修复设备回归、校正交付记录并处理失败的 GitHub Actions。最新状态以 [checkpoint](20-checkpoint.md) 和 [本轮记录](../../../focus-v20-device-regressions-2026-11-10.md) 为准。
 
@@ -10,7 +10,7 @@
 
 ## Historical TaskStartSnapshot
 
-- 2026-11-09 接续根：D:\GitHub_Clone\FocusDownloads；main；HEAD `992855ac268082cebe592b4db9c1813a64e240e5`；origin/main 0/0；无进行中Git操作；一个工作树。
+- 2026-11-09 接续根：<workspace>\FocusDownloads；main；HEAD `992855ac268082cebe592b4db9c1813a64e240e5`；origin/main 0/0；无进行中Git操作；一个工作树。
 - 接续时 tracked/index clean；未跟踪 src/tests/tools/docs/.github 为空。保留已有 tests 临时目录与无关根目录探针，不 reset/stash/clean。
 - 原包主二进制 SHA256 `6af11eb309cc7f2d75bd87ddaf4f6fb231305825a876678ae1414e2b7fcf424c`。
 - 既有 v19 编译来源 `afb5b4d2c80c39e4c0d5e0823b5a4a5fe9ce0d69`。新实验v20三次CI全部失败，没有新交付。

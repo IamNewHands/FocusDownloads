@@ -21,7 +21,7 @@
 - Artifact key: focus-v19-verified
 - Slice ID: whole-repair
 - Type: native-ci-and-package
-- Source: CI42475892882 afb5b4d2c80c39e4c0d5e0823b5a4a5fe9ce0d69; D:/GitHub_Clone/Focus_2.9.7_patched_v19.ipa
+- Source: CI42475892882 afb5b4d2c80c39e4c0d5e0823b5a4a5fe9ce0d69; <workspace>/Focus_2.9.7_patched_v19.ipa
 - Summary: 本机39/39包装回归；CI Foundation26下载+common/host/edge/malformed全部PASS，UIKit图标与表单fixture PASS，arm64/provenance PASS；新IPA357条/433diff/等长/ZIP与保留补丁独立读回PASS，旧包库SHA不变；真机未重签验收，无CGImage向量仍条件限制
 - Verifier: 主代理实际命令与CI日志、独立规格/质量复核、IPA字节读回
 - Evidence status: evidence-finalized

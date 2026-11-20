@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "aegis.schema.v0",
+  "requestedOutcome": "完成原方案①④⑤功能、安全兼容与原生构建/独占新包交付",
+  "goal": "完成原方案①④⑤功能、安全兼容与原生构建/独占新包交付",
+  "successEvidence": [],
+  "stopCondition": "Stop when success evidence is satisfied or a blocker/risk requires pause.",
+  "nonGoals": [],
+  "scope": "仅FocusDownloads注入层，保留v19稳定图标缓存与既有数据，不增加授权或云服务补丁",
+  "changeKinds": [
+    "architecture"
+  ],
+  "riskHints": []
+}

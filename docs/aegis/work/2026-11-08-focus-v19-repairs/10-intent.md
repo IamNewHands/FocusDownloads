@@ -17,18 +17,18 @@
 
 ## BaselineReadSetHint
 
-- D:\GitHub_Clone\_artifacts\focusdm\Focus-v18-review-20261108.md
+- <workspace>\_artifacts\focusdm\Focus-v18-review-20261108.md
 
 ## BaselineUsageDraft
 
 - Required baseline refs:
-- D:/GitHub_Clone/_artifacts/focusdm/Focus-v18-review-20261108.md
+- <workspace>/_artifacts/focusdm/Focus-v18-review-20261108.md
 - Delivered context refs:
 - none
 - Acknowledged before plan:
-- D:/GitHub_Clone/_artifacts/focusdm/Focus-v18-review-20261108.md
+- <workspace>/_artifacts/focusdm/Focus-v18-review-20261108.md
 - Cited in plan:
-- D:/GitHub_Clone/FocusDownloads/docs/aegis/plans/2026-11-08-focus-v19-repairs.md
+- docs/aegis/plans/2026-11-08-focus-v19-repairs.md
 - Missing refs:
 - none
 - Advisory decision: continue

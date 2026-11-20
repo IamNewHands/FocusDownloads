@@ -109,29 +109,21 @@ jobs:
           (cd build && shasum -a 256 FocusDM.dylib FocusDM.provenance.json > SHA256SUMS.txt)
           cat build/SHA256SUMS.txt
 
-      - name: Publish the single nightly release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      # Releases are hand-cut and versioned (v1.0, v1.1, ...) so each one keeps a
+      # single named IPA; the CI build only refreshes the dylib on the builds branch.
+      - name: Publish the library to the builds branch
         run: |
           set -euo pipefail
-          tag="nightly"
-          title="FocusDownloads nightly (run #$GITHUB_RUN_NUMBER)"
-          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          notes=$(printf 'FocusDownloads nightly build of `%s`.\n\n- Built at: %s\n- Run: [run #%s](%s)\n- Commit: `%s`\n' "$GITHUB_REF_NAME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_RUN_NUMBER" "$run_url" "${GITHUB_SHA:0:7}")
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$tag" build/FocusDM.dylib build/FocusDM.provenance.json build/SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --clobber
-            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --title "$title" --notes "$notes"
-            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq '.assets[] | "\(.id)\t\(.name)"' |
-              while IFS=$'\t' read -r id name; do
-                case "$name" in
-                  FocusDM.dylib | FocusDM.provenance.json | SHA256SUMS.txt | *.ipa) continue ;;
-                esac
-                echo "Removing stale asset: $name"
-                gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id"
-              done
-            release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .id)
-            gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -F draft=true >/dev/null
-            gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -F draft=false >/dev/null
-          else
-            gh release create "$tag" build/FocusDM.dylib build/FocusDM.provenance.json build/SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" --title "$title" --notes "$notes"
-          fi
+          SHORT="${GITHUB_SHA::7}"
+          git config user.name "focusdm-ci"
+          git config user.email "focusdm-ci@users.noreply.github.com"
+          git checkout --orphan builds-tmp
+          git rm -rf --cached . >/dev/null
+          mkdir -p builds
+          cp build/FocusDM.dylib "builds/FocusDM-v20-${SHORT}.dylib"
+          cp build/FocusDM.provenance.json "builds/FocusDM-v20-${SHORT}.provenance.json"
+          cp build/SHA256SUMS.txt builds/SHA256SUMS.txt
+          printf '%s\n' "$GITHUB_SHA" > builds/LATEST
+          git add -f builds
+          git commit -m "build ${SHORT}"
+          git push -f origin HEAD:builds

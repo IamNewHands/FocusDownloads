@@ -2,7 +2,7 @@
 
 ## 目标与批准依据
 
-用户要求按[完整审查报告](<D:/GitHub_Clone/_artifacts/focusdm/Focus-v18-review-20261108.md>)逐项修复。覆盖 I1–I5、D1–D8、U1–U4、B1–B4；不是只做最初两个优先问题。
+用户要求按[完整审查报告](<workspace>/_artifacts/focusdm/Focus-v18-review-20261108.md>)逐项修复。覆盖 I1–I5、D1–D8、U1–U4、B1–B4；不是只做最初两个优先问题。
 
 本地修改、测试、独立复核及本地提交属于当前执行边界。用户随后明确批准：复核通过后推送 `IamNewHands/FocusDownloads` 的 `main`，触发现有 macOS CI、下载新构建产物并生成全新 v19 IPA；不覆盖原 IPA 或旧产物，不代签或安装。保留现有 VIP/重签/CloudKit/locale/友盟二进制补丁，不新增权益绕过，不清理用户数据。
 
@@ -22,7 +22,7 @@ ObjC + Foundation/UIKit + runtime，纯 Python 打包和静态验证。当前单
 
 ## 基线、兼容与必要性
 
-TaskStartSnapshot：工程根 D:/GitHub_Clone/FocusDownloads，main，HEAD 3e566c4569e2866cd991097494ca1f3bbb4f64d7；tracked/staged/unstaged/untracked 原均空；无 merge/rebase；唯一 worktree；本地与 upstream 0/0。现已新增本轮 docs/aegis 记录，非业务修改。
+TaskStartSnapshot：工程根 <workspace>/FocusDownloads，main，HEAD 3e566c4569e2866cd991097494ca1f3bbb4f64d7；tracked/staged/unstaged/untracked 原均空；无 merge/rebase；唯一 worktree；本地与 upstream 0/0。现已新增本轮 docs/aegis 记录，非业务修改。
 
 Change Necessity: code-change。文件删除范围、错误模型键、后台任务恢复关系和终态归档由源码决定，修改文案/重签/设置不能修复。最小边界是已有四类 owner 与打包入口；不改变原 App 的 VIP、书签导入、同步不可用边界。
 

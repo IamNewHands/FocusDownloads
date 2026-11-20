@@ -234,7 +234,8 @@ static void (*orig_UserScriptController_reloadData)(id, SEL);
         return NO; // Already updated today
     }
     
-    NSDate *lastAttempt = [NSUserDefaults.standardUserDefaults objectForKey:FDMUserScriptLastAttemptDateKey];
+    id storedAttempt = [NSUserDefaults.standardUserDefaults objectForKey:FDMUserScriptLastAttemptDateKey];
+    NSDate *lastAttempt = [storedAttempt isKindOfClass:NSDate.class] ? (NSDate *)storedAttempt : nil;
     if (lastAttempt && [[NSDate date] timeIntervalSinceDate:lastAttempt] < FDMUserScriptFailureBackoffInterval) {
         return NO; // Failure backoff
     }

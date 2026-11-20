@@ -1,7 +1,7 @@
 # FocusDM v20 — iOS Focus 2.9.7 原生注入增强补丁
 
 [![CI Build](https://github.com/IamNewHands/FocusDownloads/actions/workflows/build.yml/badge.svg)](https://github.com/IamNewHands/FocusDownloads/actions/workflows/build.yml)
-[![Nightly Release](https://img.shields.io/github/v/release/IamNewHands/FocusDownloads?label=Nightly&color=success)](https://github.com/IamNewHands/FocusDownloads/releases/tag/nightly)
+[![Latest Release](https://img.shields.io/github/v/release/IamNewHands/FocusDownloads?label=Release&color=success)](https://github.com/IamNewHands/FocusDownloads/releases/latest)
 [![Platform](https://img.shields.io/badge/Platform-iOS%2014.0%2B-blue.svg)](https://apple.com/ios)
 [![Language](https://img.shields.io/badge/Language-Objective--C-orange.svg)](https://developer.apple.com)
 
@@ -251,7 +251,7 @@ python -m unittest discover -s tests -p "test_*.py"
 
 仓库已配置完善的 CI 流水线（`.github/workflows/build.yml`）：
 - 每次向 `main` 分支推送代码，GitHub Actions 会在 `macos-15` 环境下拉取最新的 iOS SDK 编译出经过严格测试校验的 arm64 架构动态库 `FocusDM.dylib` 与 `FocusDM.provenance.json`。
-- CI 构建成功后，会自动触发 Nightly 单一滚动发布并更新下载资产。
+- CI 构建成功后，会把 `FocusDM.dylib` 与 provenance 推到 `builds` 分支（`builds/LATEST` 指向最新提交）；Release 手工按版本切（`v1.0`、`v1.1`…），每个 Release 只保留一个带版本号的 IPA。
 
 ### 3. 本地打包最终 IPA
 
@@ -262,7 +262,7 @@ python tools/build_focus.py `
   --ipa "../ipa/Focus_2.9.7.ipa" `
   --dylib "_ci_dl/FocusDM.dylib" `
   --provenance "_ci_dl/FocusDM.provenance.json" `
-  --source-root "D:\GitHub_Clone\FocusDownloads" `
+  --source-root "." `
   --out "Focus_2.9.7_patched_v20_final.ipa"
 ```
 

@@ -13,7 +13,7 @@ Base commit: `dcab80e46dd498a42d023aa795caff2f4d326dc5`.
 
 Read-only shell Mach-O metadata and Capstone observations, not REA Evidence or runtime execution:
 
-- Input: `D:\GitHub_Clone\_focus_ipa\Payload\PPBrowser.app\PPBrowser`
+- Input: `<workspace>\_focus_ipa\Payload\PPBrowser.app\PPBrowser`
 - SHA256: `6af11eb309cc7f2d75bd87ddaf4f6fb231305825a876678ae1414e2b7fcf424c`
 - At `0x100244010` through `0x10024402c`, the host inserts `root`, an empty parent,
   and the localized bookmark title using only `bookmarkId,parentId,title`. URL,

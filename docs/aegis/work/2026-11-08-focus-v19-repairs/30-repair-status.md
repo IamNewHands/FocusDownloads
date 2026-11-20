@@ -32,7 +32,7 @@
 
 - 本机 Python 包装/来源/输出回归 **39/39 PASS**，含本地真实原包→旧v18精确重建和错误输入拒绝。
 - CI [42475892882](<https://github.com/IamNewHands/FocusDownloads/actions/runs/42475892882>)：源码 `afb5b4d...`；Python38项通过（本机原IPA fixture不在runner上，跳过1类）；Foundation **26下载场景**、common/host/edge/malformed全部PASS；UIKit缓存与输入表单fixture PASS；arm64库编译和provenance PASS。
-- 新包 [Focus_2.9.7_patched_v19.ipa](<D:/GitHub_Clone/Focus_2.9.7_patched_v19.ipa>)：20,613,437字节，SHA256 **`a39aee1077c9f52cbbe18a2bd393abc0978501e970c27373354d60e558f6a6b6`**。
+- 新包 [Focus_2.9.7_patched_v19.ipa](<workspace>/Focus_2.9.7_patched_v19.ipa>)：20,613,437字节，SHA256 **`a39aee1077c9f52cbbe18a2bd393abc0978501e970c27373354d60e558f6a6b6`**。
 - 包内357条，原355条中仅主exe和Info.plist变化；只新增FocusDM.dylib与来源JSON。主exe仍10,351,024字节，差异433字节（此前432补丁范围+minOS升级）；VIP/重签恒真及其他已保留补丁一致。ZIP完整性/来源/资源/哈希独立读回PASS。
 - 新库320,128字节，SHA256 `1cea9db7bd2d528ceaebdce68369e40c7c2c0770a78a28e29668a30688e714b5`，embedded/source manifest与CI源提交匹配。
 - 原IPA、旧v18 IPA、固定旧库哈希未变化。主提交c5f25ad为修复候选；4222580修退休runner；a01d572修真实Foundation常量/测试宏错误；afb5b4d补实际CoreGraphics链接，最终全CI成功。
