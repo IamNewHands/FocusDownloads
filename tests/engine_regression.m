@@ -840,6 +840,28 @@ static void FDMETestVaultCacheAndRemoval(void) {
     NSString *emptyID = nil;
     FDMVaultRemove(emptyID);
     FDMVaultRemove(@"");
+    // Eviction must drop the coldest entry. An arbitrary victim could discard the entry that
+    // is about to be read again, which is exactly the hit this cache exists to serve.
+    NSMutableArray<NSString *> *lruIDs = [NSMutableArray array];
+    for (NSUInteger index = 0; index <= 64; index++) {
+        NSString *identifier = [NSString stringWithFormat:@"lru-%03lu", (unsigned long)index];
+        [lruIDs addObject:identifier];
+        FDMVaultPut(identifier, [identifier dataUsingEncoding:NSUTF8StringEncoding], expiry, &error);
+    }
+    NSArray<NSString *> *afterOverflow = FDMVaultCacheIDsForTesting();
+    FDMECheck(afterOverflow.count == 64, @"cache stays at its bound after overflow");
+    FDMECheck(![afterOverflow containsObject:lruIDs.firstObject],
+        @"the coldest entry is the one the overflow evicts");
+    // Reading the evicted object falls back to the vault and refreshes its recency, so the
+    // entry that overflows next must be the coldest one still cached, not the one just read.
+    FDMECheck(FDMVaultGet(lruIDs.firstObject, &error) != nil, @"evicted object still reads back");
+    FDMVaultPut(@"lru-overflow", [@"overflow" dataUsingEncoding:NSUTF8StringEncoding], expiry, &error);
+    NSArray<NSString *> *afterTouch = FDMVaultCacheIDsForTesting();
+    FDMECheck(afterTouch.count == 64 && [afterTouch containsObject:lruIDs.firstObject],
+        @"the just-read entry survives the next eviction");
+    FDMECheck(![afterTouch containsObject:lruIDs[1]], @"the next coldest entry is the one evicted");
+    [lruIDs addObject:@"lru-overflow"];
+    for (NSString *identifier in lruIDs) FDMVaultRemove(identifier);
     FDMECases++;
 }
 

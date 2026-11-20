@@ -7,4 +7,9 @@ FOUNDATION_EXPORT BOOL FDMVaultPut(NSString *objectID, NSData *data, NSTimeInter
 FOUNDATION_EXPORT NSData * _Nullable FDMVaultGet(NSString *objectID, NSError **error);
 // Drops the device-local object. Deleting a download must not leave its request behind.
 FOUNDATION_EXPORT void FDMVaultRemove(NSString *objectID);
+#ifdef FDM_TESTING
+// Cached object identifiers in recency order, least recently used first. Proves eviction
+// drops the coldest entry instead of an arbitrary one.
+FOUNDATION_EXPORT NSArray<NSString *> *FDMVaultCacheIDsForTesting(void);
+#endif
 NS_ASSUME_NONNULL_END

@@ -26,20 +26,47 @@ static NSMutableDictionary<NSString *, NSDictionary *> *FDMVaultCache(void) {
     dispatch_once(&once, ^{ cache = [NSMutableDictionary dictionary]; });
     return cache;
 }
+// Recency order, least recently used first. NSMutableDictionary has no stable enumeration
+// order, so evicting allKeys.firstObject dropped an arbitrary entry: the one about to be
+// read again could go before one untouched for the whole session.
+static NSMutableArray<NSString *> *FDMVaultCacheOrder(void) {
+    static NSMutableArray *order;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ order = [NSMutableArray array]; });
+    return order;
+}
+// Every touch moves the object to the back, so the front of the order is the next victim.
+static void FDMVaultCacheTouch(NSString *objectID) {
+    NSMutableArray *order = FDMVaultCacheOrder();
+    [order removeObject:objectID];
+    [order addObject:objectID];
+}
 static NSDictionary *FDMVaultCached(NSString *objectID) {
-    @synchronized (FDMVaultCache()) { return FDMVaultCache()[objectID]; }
+    @synchronized (FDMVaultCache()) {
+        NSDictionary *envelope = FDMVaultCache()[objectID];
+        if (envelope) FDMVaultCacheTouch(objectID);
+        return envelope;
+    }
 }
 static void FDMVaultCacheStore(NSString *objectID, NSDictionary *envelope) {
     if (!objectID.length || ![envelope isKindOfClass:NSDictionary.class]) return;
     @synchronized (FDMVaultCache()) {
         NSMutableDictionary *cache = FDMVaultCache();
-        [cache removeObjectForKey:objectID];
+        NSMutableArray *order = FDMVaultCacheOrder();
+        FDMVaultCacheTouch(objectID);
         cache[objectID] = envelope;
-        while (cache.count > FDMVaultCacheLimit) [cache removeObjectForKey:cache.allKeys.firstObject];
+        while (cache.count > FDMVaultCacheLimit && order.count) {
+            NSString *victim = order.firstObject;
+            [order removeObjectAtIndex:0];
+            [cache removeObjectForKey:victim];
+        }
     }
 }
 static void FDMVaultCacheDrop(NSString *objectID) {
-    @synchronized (FDMVaultCache()) { [FDMVaultCache() removeObjectForKey:objectID]; }
+    @synchronized (FDMVaultCache()) {
+        [FDMVaultCache() removeObjectForKey:objectID];
+        [FDMVaultCacheOrder() removeObject:objectID];
+    }
 }
 static BOOL FDMVaultValidID(NSString *objectID) {
     return [objectID isKindOfClass:NSString.class] && objectID.length > 0 && objectID.length <= 180 &&
@@ -102,6 +129,11 @@ NSData *FDMVaultGet(NSString *objectID, NSError **error) {
     FDMVaultCacheStore(objectID, envelope);
     return envelope[@"data"];
 }
+#ifdef FDM_TESTING
+NSArray<NSString *> *FDMVaultCacheIDsForTesting(void) {
+    @synchronized (FDMVaultCache()) { return FDMVaultCacheOrder().copy; }
+}
+#endif
 void FDMVaultRemove(NSString *objectID) {
     if (!FDMVaultValidID(objectID)) return;
     FDMVaultCacheDrop(objectID);
