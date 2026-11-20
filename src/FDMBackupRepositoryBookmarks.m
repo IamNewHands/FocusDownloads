@@ -39,9 +39,6 @@ static NSData *FDMBackupSortedItemsPayload(NSDictionary<NSString *, NSDictionary
     return FDMJSONCanonicalData(@{@"schemaVersion": @1, @"items": sorted}, error);
 }
 static BOOL FDMRepoInteger(id value, long long minimum, long long maximum, long long *out, NSError **error, NSString *label) {
-    if (!FDMJSONNonNegativeInteger(value, (unsigned long long)maximum, NULL) && [value isKindOfClass:NSNumber.class]) {
-        // fall through to the signed check below
-    }
     if (![value isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)value) == CFBooleanGetTypeID()) {
         if (error) *error = FDMRepoError([NSString stringWithFormat:@"%@ 必须是整数", label]);
         return NO;
