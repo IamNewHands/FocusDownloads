@@ -79,7 +79,10 @@ def main():
     finally:
         # Only this CI-created fixture app and boot state are managed.
         subprocess.run(["xcrun", "simctl", "terminate", identifier, bundle], check=False)
-        if created_boot:
+        # CI runs the navigation fixture on the same device in the next step: shutting the
+        # device down here forces a second cold boot and a multi-minute re-install. The
+        # workflow opts in to keeping it booted; a local run still cleans up after itself.
+        if created_boot and os.environ.get("FDM_SIM_KEEP_BOOTED") != "1":
             subprocess.run(["xcrun", "simctl", "shutdown", identifier], check=False)
 
 

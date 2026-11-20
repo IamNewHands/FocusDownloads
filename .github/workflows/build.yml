@@ -51,6 +51,10 @@ jobs:
       - name: UIKit icon regression in simulator
         id: uikit
         continue-on-error: true
+        # Keep the simulator booted: the next step installs on the same device, and a
+        # shutdown/reboot in between costs a cold boot plus a multi-minute install stall.
+        env:
+          FDM_SIM_KEEP_BOOTED: "1"
         run: python3 tests/run_icons_simulator.py
 
       - name: WebKit navigation and original request regression
